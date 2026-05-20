@@ -2,7 +2,7 @@
 name: refactor-prompt
 description: "Classify, analyze, and refactor prompts into optimized instructions with domain-specific enhancement, ambiguity intelligence, and agentic workflow support. WHEN: 'improve this prompt', 'rewrite my prompt', 'optimize this instruction', 'refactor prompt', 'make this prompt better', 'enhance this prompt', 'fix my prompt'"
 disable-model-invocation: true
-argument-hint: '<prompt to enhance> [optional: --mode concise|balanced|exhaustive|agentic]'
+argument-hint: '<prompt to enhance> [optional: --mode concise|balanced|exhaustive|agentic] [--copy]'
 ---
 
 # Refactor Prompt
@@ -23,8 +23,11 @@ Execute phases strictly in order. Each phase gates the next.
 
 → Reference: [Classification Guide](references/classification.md)
 
-**Mode override — check first, before anything else:**
-If `--mode concise|balanced|exhaustive|agentic` is present in the input, record that mode and lock it. Do not derive mode from complexity. Do not second-guess it. Proceed with the rest of Phase 1.
+**Flag detection — check first, before anything else:**
+- If `--mode concise|balanced|exhaustive|agentic` is present in the input, record that mode and lock it. Do not derive mode from complexity. Do not second-guess it.
+- If `--copy` is present in the input, record it. Do not strip it from the prompt text being refactored.
+
+Proceed with the rest of Phase 1.
 
 Then determine:
 
@@ -106,6 +109,8 @@ Run the self-validation checklist before outputting. If any check fails, revise 
 **If clarifying (Phase 3):** Output ONLY the questions. Nothing else.
 
 **If rewriting (Phase 5 passed):** Output ONLY the optimized prompt. No preamble, no explanation of changes, no meta-commentary, no closing remarks.
+
+**If `--copy` was specified:** After outputting the rewritten prompt, copy the full optimized prompt text to the system clipboard. Use the Bash tool to write the text to a temporary file and pipe it to the platform's clipboard command: `Set-Clipboard` (Windows), `pbcopy` (macOS), `xclip -selection clipboard` (Linux). Then delete the temp file. Do not include any confirmation message — the copy is silent.
 
 The rewritten prompt must be immediately usable — paste it into any capable AI model and get a materially better result than the original.
 
