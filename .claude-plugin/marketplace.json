@@ -8,24 +8,6 @@
 	},
 	"plugins": [
 		{
-			"name": "gsd",
-			"description": "",
-			"author": {
-				"name": "GSD"
-			},
-			"category": "Productivity",
-			"source": "./gsd"
-		},
-		{
-			"name": "mattpocock-skills",
-			"description": "",
-			"author": {
-				"name": "mattpocock"
-			},
-			"category": "design",
-			"source": "./mattpocock"
-		},
-		{
 			"name": "mrt-design",
 			"description": "",
 			"category": "productivity",
@@ -43,6 +25,15 @@
 			"description": "",
 			"category": "productivity",
 			"source": "./mrt-misc"
+		},
+		{
+			"name": "my-skill-commands",
+			"description": "Installer commands and guidance for favorite agent skills (gsd-core, mattpocock, context-mode, and extensible favorites)",
+			"author": {
+				"name": "mrt"
+			},
+			"category": "productivity",
+			"source": "./my-skill-commands"
 		}
 	]
 }

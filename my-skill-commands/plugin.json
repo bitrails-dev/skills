@@ -1,0 +1,7 @@
+{
+	"name": "my-skill-commands",
+	"description": "Installer commands and guidance for favorite agent skills (gsd-core, mattpocock, context-mode, and extensible favorites)",
+	"author": {
+		"name": "mrt"
+	}
+}

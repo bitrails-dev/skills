@@ -1,0 +1,123 @@
+{
+	"$schema": "./schema.json",
+	"version": "1.0.0",
+	"description": "Registry of favorite agent skills and their installation commands. Add new skills to the 'skills' object.",
+	"skills": {
+		"gsd-core": {
+			"id": "gsd-core",
+			"displayName": "GSD Core (Git. Ship. Done.)",
+			"description": "Spec-driven development framework designed to prevent context rot across long agent coding sessions via structured discuss->plan->execute->verify cycles.",
+			"category": "workflow",
+			"repository": "https://github.com/open-gsd/gsd-core",
+			"npxSkills": {
+				"supported": true,
+				"global": "npx skills add open-gsd/gsd-core -g",
+				"local": "npx skills add open-gsd/gsd-core",
+				"notes": "Installs GSD skills via the skills.sh CLI into agent configuration directory."
+			},
+			"npxSkillInstall": {
+				"supported": true,
+				"command": "npx skill install gsd-core",
+				"notes": "Shorthand installer command where skill package resolver supports gsd-core registry."
+			},
+			"customCommands": [
+				{
+					"name": "Official GSD Core CLI Installer (Global - Claude Code)",
+					"command": "npx @opengsd/gsd-core@latest --claude --global",
+					"recommended": true,
+					"description": "Recommended official installer configured globally for Claude Code."
+				},
+				{
+					"name": "Official GSD Core CLI Installer (Project-local - Claude Code)",
+					"command": "npx @opengsd/gsd-core@latest --claude",
+					"recommended": false,
+					"description": "Installs GSD Core only for the current project repository."
+				},
+				{
+					"name": "Interactive Universal Installer",
+					"command": "npx @opengsd/gsd-core@latest",
+					"recommended": false,
+					"description": "Interactive prompt allowing selection of target agent runtime."
+				}
+			],
+			"postInstall": [
+				"/gsd-help (Inspect all available GSD commands)",
+				"/gsd-new-project (Initialize a new spec-driven project milestone)"
+			],
+			"troubleshooting": "Always use open-gsd/gsd-core rather than outdated gsd-build forks."
+		},
+		"mattpocock": {
+			"id": "mattpocock",
+			"displayName": "Matt Pocock's Engineering & Productivity Skills",
+			"description": "Modular collection of professional software engineering habits for AI agents: Socratic review (grill-me), TDD enforcement, PRD generation, architecture diagnosis, and triage.",
+			"category": "engineering",
+			"repository": "https://github.com/mattpocock/skills",
+			"npxSkills": {
+				"supported": true,
+				"global": "npx skills@latest add mattpocock/skills -g",
+				"local": "npx skills@latest add mattpocock/skills",
+				"specificExample": "npx skills@latest add mattpocock/skills/grill-me -g",
+				"notes": "Installs the full suite or individual skills from mattpocock/skills via the Skills CLI."
+			},
+			"npxSkillInstall": {
+				"supported": true,
+				"command": "npx skill install mattpocock/skills",
+				"notes": "Shorthand installer command when using npx skill install format."
+			},
+			"customCommands": [
+				{
+					"name": "Specific Skill: Socratic Code Review (grill-me)",
+					"command": "npx skills@latest add mattpocock/skills/grill-me -g",
+					"recommended": false,
+					"description": "Installs only the popular /grill-me architecture review skill."
+				},
+				{
+					"name": "Specific Skill: Test-Driven Development (tdd)",
+					"command": "npx skills@latest add mattpocock/skills/tdd -g",
+					"recommended": false,
+					"description": "Installs only the /tdd enforcement skill."
+				}
+			],
+			"postInstall": [
+				"/setup-matt-pocock-skills (Configure repo issue tracker, triage labels, and domain docs)"
+			],
+			"troubleshooting": "Run /setup-matt-pocock-skills in the repository root after installation to align with your project conventions."
+		},
+		"context-mode": {
+			"id": "context-mode",
+			"displayName": "Context-Mode (Token & Window Optimizer)",
+			"description": "Open-source MCP plugin & agent skill saving up to 98% of context window by sandboxing tool outputs and maintaining persistent local SQLite search history.",
+			"category": "context-optimization",
+			"repository": "https://github.com/mksglu/context-mode",
+			"npxSkills": {
+				"supported": true,
+				"global": "npx skills add mksglu/context-mode -g",
+				"local": "npx skills add mksglu/context-mode",
+				"notes": "Installs the context-mode instructions and ops skill."
+			},
+			"npxSkillInstall": {
+				"supported": true,
+				"command": "npx skill install context-mode",
+				"notes": "Shorthand installer command when supported by package manager."
+			},
+			"customCommands": [
+				{
+					"name": "Claude Code Plugin Marketplace (Recommended)",
+					"command": "/plugin marketplace add mksglu/context-mode && /plugin install context-mode@context-mode",
+					"recommended": true,
+					"description": "Installs full plugin with auto-routing hooks and MCP tools within Claude Code."
+				},
+				{
+					"name": "Claude MCP Direct Addition (Tool-Only)",
+					"command": "claude mcp add context-mode -- npx -y context-mode",
+					"recommended": false,
+					"description": "Connects Context-Mode as an MCP server without conversational routing hooks."
+				}
+			],
+			"postInstall": [
+				"/context-mode:ctx-doctor (Diagnose installation and SQLite database status)"
+			],
+			"troubleshooting": "If tool output sandboxing fails, run /context-mode:ctx-doctor to check node and SQLite dependencies."
+		}
+	}
+}

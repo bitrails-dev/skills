@@ -1,0 +1,147 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"title": "SkillsRegistry",
+	"description": "Schema definition for the favorite agent skills installer registry",
+	"type": "object",
+	"required": [
+		"version",
+		"description",
+		"skills"
+	],
+	"properties": {
+		"version": {
+			"type": "string",
+			"description": "Semantic version of the registry format"
+		},
+		"description": {
+			"type": "string",
+			"description": "Description of this registry file"
+		},
+		"skills": {
+			"type": "object",
+			"description": "Dictionary of skills keyed by skill identifier",
+			"additionalProperties": {
+				"$ref": "#/$defs/SkillEntry"
+			}
+		}
+	},
+	"$defs": {
+		"SkillEntry": {
+			"type": "object",
+			"required": [
+				"id",
+				"displayName",
+				"description",
+				"category",
+				"repository"
+			],
+			"properties": {
+				"id": {
+					"type": "string",
+					"description": "Unique key or slug for the skill (e.g. gsd-core)"
+				},
+				"displayName": {
+					"type": "string",
+					"description": "Human-friendly display title"
+				},
+				"description": {
+					"type": "string",
+					"description": "Brief explanation of what the skill provides"
+				},
+				"category": {
+					"type": "string",
+					"description": "Category or functional domain (e.g. workflow, engineering, context-optimization)"
+				},
+				"repository": {
+					"type": "string",
+					"format": "uri",
+					"description": "Official GitHub repository or project documentation URL"
+				},
+				"npxSkills": {
+					"type": "object",
+					"description": "Commands using the official Skills CLI (`npx skills add`)",
+					"properties": {
+						"supported": {
+							"type": "boolean",
+							"description": "Whether npx skills add is supported"
+						},
+						"global": {
+							"type": "string",
+							"description": "Command to install globally"
+						},
+						"local": {
+							"type": "string",
+							"description": "Command to install into current project"
+						},
+						"specificExample": {
+							"type": "string",
+							"description": "Example command to install an individual sub-skill"
+						},
+						"notes": {
+							"type": "string",
+							"description": "Additional notes for the npx skills method"
+						}
+					}
+				},
+				"npxSkillInstall": {
+					"type": "object",
+					"description": "Command using the shorthand `npx skill install` format if supported",
+					"properties": {
+						"supported": {
+							"type": "boolean",
+							"description": "Whether npx skill install is supported directly"
+						},
+						"command": {
+							"type": "string",
+							"description": "The exact npx skill install command"
+						},
+						"notes": {
+							"type": "string",
+							"description": "Notes on compatibility or prerequisites"
+						}
+					}
+				},
+				"customCommands": {
+					"type": "array",
+					"description": "Custom installation commands or alternative package installers",
+					"items": {
+						"type": "object",
+						"required": [
+							"name",
+							"command"
+						],
+						"properties": {
+							"name": {
+								"type": "string",
+								"description": "Human-readable label for this installation method"
+							},
+							"command": {
+								"type": "string",
+								"description": "Terminal command string for user to copy and run"
+							},
+							"recommended": {
+								"type": "boolean",
+								"description": "Whether this is the recommended primary method"
+							},
+							"description": {
+								"type": "string",
+								"description": "Explanation of what this command does"
+							}
+						}
+					}
+				},
+				"postInstall": {
+					"type": "array",
+					"description": "Suggested post-install setup commands, doctor checks, or slash commands",
+					"items": {
+						"type": "string"
+					}
+				},
+				"troubleshooting": {
+					"type": "string",
+					"description": "Common failure points or tips"
+				}
+			}
+		}
+	}
+}
