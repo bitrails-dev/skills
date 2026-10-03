@@ -1,5 +1,5 @@
 ---
-name: prompt-refiner
+name: refine-and-execute-prompt
 description: "Refines a prompt into a precise execution brief, decomposes into sub-tasks, executes with parallel agents, and verifies all outputs through self-check and independent verification. WHEN: 'refine and execute', 'run with agents', 'parallel task execution', 'refine prompt', 'execute with verification'"
 disable-model-invocation: true
 ---
