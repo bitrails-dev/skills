@@ -1,0 +1,23 @@
+{
+  "name": "agent-mesh",
+  "version": "1.0.0",
+  "description": "Universal inter-harness coordination mesh for Claude, Antigravity, OpenCode, Pi, and Codex",
+  "type": "module",
+  "bin": {
+    "mesh": "./scripts/mesh.mjs"
+  },
+  "scripts": {
+    "test": "node --test tests/phase1-test.mjs tests/phase2-test.mjs tests/swarm-test.mjs tests/resilience-test.mjs"
+  },
+  "keywords": [
+    "agent-mesh",
+    "agents",
+    "claude-code",
+    "antigravity",
+    "opencode",
+    "pi",
+    "codex"
+  ],
+  "author": "mrt <info@bitrails.dev>",
+  "license": "MIT"
+}

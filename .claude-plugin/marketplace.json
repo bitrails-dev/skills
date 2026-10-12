@@ -34,6 +34,15 @@
 			},
 			"category": "productivity",
 			"source": "./my-skill-commands"
+		},
+		{
+			"name": "agent-mesh",
+			"description": "Universal inter-harness coordination mesh for Claude, Antigravity, OpenCode, Pi, and Codex",
+			"author": {
+				"name": "mrt"
+			},
+			"category": "productivity",
+			"source": "./skills/agent-mesh"
 		}
 	]
 }

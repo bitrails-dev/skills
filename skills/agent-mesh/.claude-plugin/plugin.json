@@ -1,0 +1,7 @@
+{
+  "name": "agent-mesh",
+  "description": "Universal inter-harness coordination mesh for Claude, Antigravity, OpenCode, Pi, and Codex",
+  "author": {
+    "name": "mrt"
+  }
+}
