@@ -49,6 +49,7 @@ export function initDatabase(dbPath) {
       parent_id TEXT,
       from_agent TEXT NOT NULL,
       to_agent TEXT NOT NULL,
+      to_session TEXT,
       kind TEXT NOT NULL DEFAULT 'ask', -- ask, reply, handoff, review, notify, cancel
       priority INT NOT NULL DEFAULT 0, -- 0: normal, 1: urgent, 2: human interrupt
       hops INT NOT NULL DEFAULT 0,
@@ -66,7 +67,11 @@ export function initDatabase(dbPath) {
       harness TEXT NOT NULL,
       session_id TEXT PRIMARY KEY,
       cwd TEXT NOT NULL,
-      state TEXT NOT NULL DEFAULT 'idle', -- idle, busy, human-held, error, lost
+      state TEXT NOT NULL DEFAULT 'idle', -- idle, busy, human-held, error, lost, closed
+      origin TEXT NOT NULL DEFAULT 'mesh', -- mesh, interactive
+      presence TEXT NOT NULL DEFAULT 'none', -- socket, pid, none
+      pid INT,
+      last_seen INT,
       lease_holder TEXT,
       last_cost_usd REAL DEFAULT 0,
       last_turns INT DEFAULT 0,
@@ -76,6 +81,16 @@ export function initDatabase(dbPath) {
 
     CREATE INDEX IF NOT EXISTS idx_sessions_harness ON sessions (harness, state);
   `);
+
+  // Schema migrations for existing databases
+  const sessionCols = db.prepare("PRAGMA table_info(sessions)").all().map((c) => c.name);
+  if (!sessionCols.includes("origin")) db.exec("ALTER TABLE sessions ADD COLUMN origin TEXT NOT NULL DEFAULT 'mesh';");
+  if (!sessionCols.includes("presence")) db.exec("ALTER TABLE sessions ADD COLUMN presence TEXT NOT NULL DEFAULT 'none';");
+  if (!sessionCols.includes("pid")) db.exec("ALTER TABLE sessions ADD COLUMN pid INT;");
+  if (!sessionCols.includes("last_seen")) db.exec("ALTER TABLE sessions ADD COLUMN last_seen INT;");
+
+  const msgCols = db.prepare("PRAGMA table_info(messages)").all().map((c) => c.name);
+  if (!msgCols.includes("to_session")) db.exec("ALTER TABLE messages ADD COLUMN to_session TEXT;");
 
   return db;
 }
@@ -92,14 +107,14 @@ export class MeshRepository {
 
     // Precompile statements for optimal performance
     this.stmtInsertMessage = db.prepare(`
-      INSERT INTO messages (id, conversation_id, parent_id, from_agent, to_agent, kind, priority, hops, status, body, refs_json, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+      INSERT INTO messages (id, conversation_id, parent_id, from_agent, to_agent, to_session, kind, priority, hops, status, body, refs_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
     `);
 
     this.stmtClaimMessages = db.prepare(`
       UPDATE messages
       SET status = 'claimed', delivered_at = ?
-      WHERE to_agent = ? AND status = 'pending'
+      WHERE to_agent = ? AND status = 'pending' AND (? IS NULL OR to_session IS NULL OR to_session = ?)
       RETURNING *
     `);
 
@@ -112,7 +127,7 @@ export class MeshRepository {
     `);
 
     this.stmtRestorePending = db.prepare(`
-      UPDATE messages SET status = 'pending' WHERE id = ?
+      UPDATE messages SET status = 'pending' WHERE id = ? AND status = 'claimed'
     `);
 
     this.stmtRestorePendingForAgent = db.prepare(`
@@ -120,12 +135,26 @@ export class MeshRepository {
     `);
 
     this.stmtUpsertSession = db.prepare(`
-      INSERT INTO sessions (harness, session_id, cwd, state, lease_holder, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO sessions (harness, session_id, cwd, state, origin, pid, lease_holder, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(session_id) DO UPDATE SET
         cwd = excluded.cwd,
         state = excluded.state,
+        origin = excluded.origin,
+        pid = excluded.pid,
         lease_holder = excluded.lease_holder,
+        updated_at = excluded.updated_at
+    `);
+
+    this.stmtUpsertSessionEvent = db.prepare(`
+      INSERT INTO sessions (harness, session_id, cwd, state, origin, pid, last_seen, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        cwd = excluded.cwd,
+        state = excluded.state,
+        origin = excluded.origin,
+        pid = excluded.pid,
+        last_seen = excluded.last_seen,
         updated_at = excluded.updated_at
     `);
 
@@ -138,7 +167,14 @@ export class MeshRepository {
     `);
 
     this.stmtGetActiveSession = db.prepare(`
-      SELECT * FROM sessions WHERE harness = ? AND state != 'lost' ORDER BY updated_at DESC LIMIT 1
+      SELECT * FROM sessions
+      WHERE harness = ? AND state NOT IN ('lost', 'closed')
+      ORDER BY (state = 'human-held' OR (state IN ('idle', 'busy') AND origin = 'interactive')) DESC, updated_at DESC
+      LIMIT 1
+    `);
+
+    this.stmtListLiveSessions = db.prepare(`
+      SELECT * FROM sessions WHERE state NOT IN ('lost', 'closed') ORDER BY updated_at DESC
     `);
 
     this.stmtGetPendingCount = db.prepare(`
@@ -170,6 +206,7 @@ export class MeshRepository {
       msg.parentId || null,
       msg.from,
       msg.to,
+      msg.toSession || null,
       msg.kind || "ask",
       msg.priority ?? 0,
       msg.hops ?? 0,
@@ -182,12 +219,14 @@ export class MeshRepository {
 
   /**
    * Atomically claims all pending messages for an agent using UPDATE ... RETURNING.
+   * Optionally filtered to a specific target session ID.
    * @param {string} agentId
+   * @param {string|null} [sessionId=null]
    * @returns {Array<object>} Claimed message rows.
    */
-  claimMessagesForAgent(agentId) {
+  claimMessagesForAgent(agentId, sessionId = null) {
     const now = Date.now();
-    return this.stmtClaimMessages.all(now, agentId);
+    return this.stmtClaimMessages.all(now, agentId, sessionId, sessionId);
   }
 
   /**
@@ -234,10 +273,56 @@ export class MeshRepository {
       session.sessionId,
       session.cwd,
       session.state || "idle",
+      session.origin || "mesh",
+      session.pid || null,
       session.leaseHolder || null,
       now,
       now
     );
+  }
+
+  /**
+   * Idempotently records a session lifecycle event.
+   * @param {object} event
+   * @returns {{ok: boolean, state: string}}
+   */
+  updateSessionEvent({ harness, sessionId, event, pid = null, cwd = null, origin = "interactive" }) {
+    const now = Date.now();
+    let state = "idle";
+    if (event === "busy") state = "busy";
+    else if (event === "end" || event === "closed") state = "closed";
+    else if (event === "start" || event === "idle") state = "idle";
+
+    // Supersede older rows for this (harness, pid) if sessionId changed (e.g. /clear)
+    if (pid && sessionId) {
+      try {
+        this.db.prepare(`
+          UPDATE sessions SET state = 'closed', updated_at = ?
+          WHERE harness = ? AND pid = ? AND session_id != ? AND state NOT IN ('closed', 'lost')
+        `).run(now, harness, pid, sessionId);
+      } catch {}
+    }
+
+    this.stmtUpsertSessionEvent.run(
+      harness,
+      sessionId,
+      cwd || process.cwd(),
+      state,
+      origin,
+      pid,
+      now,
+      now,
+      now
+    );
+    return { ok: true, state };
+  }
+
+  /**
+   * Lists all live sessions (not closed or lost).
+   * @returns {Array<object>}
+   */
+  listLiveSessions() {
+    return this.stmtListLiveSessions.all();
   }
 
   /**

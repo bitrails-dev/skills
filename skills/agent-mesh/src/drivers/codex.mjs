@@ -12,7 +12,7 @@ export function createCodexDriver() {
     bin: "codex",
     getArgv(session) {
       const args = ["exec", "--json"];
-      if (session?.id) {
+      if (session?.id && !session.id.startsWith("sess-")) {
         args.push("resume", session.id);
       }
       return args;
@@ -34,7 +34,10 @@ export function createCodexDriver() {
     },
 
     attach(session) {
-      return ["codex", "resume", session.id];
+      if (session?.id && !session.id.startsWith("sess-")) {
+        return ["codex", "resume", session.id];
+      }
+      return ["codex"];
     },
   });
 }

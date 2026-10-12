@@ -23,11 +23,12 @@ const brokerPidPath = join(meshDir, "broker.json");
 const ipcAddress = resolveIpcAddress(rootDir);
 
 function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    return err.code === "EPERM";
   }
 }
 
@@ -130,11 +131,14 @@ async function main() {
         }
 
         console.log("\nActive Sessions:");
-        if (res.sessions.length === 0) {
+        const live = res.liveSessions || res.sessions || [];
+        if (live.length === 0) {
           console.log("  No active sessions recorded.");
         } else {
-          for (const s of res.sessions) {
-            console.log(`  - [${s.harness}] ID: ${s.session_id} | State: ${s.state}`);
+          for (const s of live) {
+            const originTag = s.origin === "interactive" ? "[Interactive]" : "[Mesh-Headless]";
+            const pidTag = s.pid ? `PID: ${s.pid}` : "No PID";
+            console.log(`  - [${s.harness}] ID: ${s.session_id} | State: ${s.state} | ${originTag} | ${pidTag}`);
           }
         }
         console.log("");
@@ -146,14 +150,61 @@ async function main() {
       break;
     }
 
+    case "register":
+    case "announce": {
+      let harness = null;
+      let sessionId = null;
+      let pid = process.pid;
+      let event = "start";
+      let sessionCwd = rootDir;
+
+      for (let i = 0; i < args.length; i++) {
+        if (args[i] === "--harness" && args[i + 1]) { harness = args[++i]; }
+        else if (args[i] === "--session" && args[i + 1]) { sessionId = args[++i]; }
+        else if (args[i] === "--pid" && args[i + 1]) { pid = Number(args[++i]); }
+        else if (args[i] === "--event" && args[i + 1]) { event = args[++i]; }
+        else if (args[i] === "--cwd" && args[i + 1]) { sessionCwd = args[++i]; }
+      }
+
+      if (!harness || !sessionId) {
+        console.error("Usage: mesh announce --harness <name> --session <id> [--pid <pid>] [--event <event>]");
+        process.exit(1);
+      }
+
+      try {
+        const res = await sendIpcRequest(ipcAddress, {
+          action: "session_event",
+          payload: { harness, sessionId, event, pid, cwd: sessionCwd, origin: "interactive" },
+        });
+        if (res.ok) {
+          console.log(`[Success] Registered session '${sessionId}' (${harness}) as ${res.state}.`);
+        } else {
+          console.error(`Error: ${res.error}`);
+          process.exit(1);
+        }
+      } catch (err) {
+        console.error(`Failed to announce session: ${err.message}`);
+        process.exit(1);
+      }
+      break;
+    }
+
     case "send":
     case "ask": {
       let to = null;
+      let toSession = null;
       let bodyArgs = [];
 
       for (let i = 0; i < args.length; i++) {
         if (args[i] === "--to" && args[i + 1]) {
-          to = args[i + 1];
+          const target = args[i + 1];
+          if (target.includes("@")) {
+            const parts = target.split("@");
+            to = parts[0];
+            toSession = parts[1];
+          } else {
+            to = target;
+          }
           i++;
         } else {
           bodyArgs.push(args[i]);
@@ -162,9 +213,12 @@ async function main() {
 
       const body = bodyArgs.join(" ").trim();
       if (!to || !body) {
-        console.error(`Usage: mesh ${cmd} --to <agent> "<message/prompt>"`);
+        console.error(`Usage: mesh ${cmd} --to <agent>[@<session>] "<message/prompt>"`);
         process.exit(1);
       }
+
+      // H3: Increment hops on agent-sent ask chains; human-sent asks start at 0
+      const effectiveHops = (meshAgent && meshAgent !== "human-cli") ? meshHops + 1 : 0;
 
       try {
         const res = await sendIpcRequest(ipcAddress, {
@@ -172,9 +226,10 @@ async function main() {
           payload: {
             from: meshAgent,
             to,
+            toSession,
             body,
             kind: cmd === "ask" ? "ask" : "notify",
-            hops: meshHops,
+            hops: effectiveHops,
           },
         });
 

@@ -80,7 +80,7 @@ export function createOpenCodeDriver(options = {}) {
           bin: "opencode",
           getArgv(s) {
             const args = ["run"];
-            if (s?.id) args.push("--session", s.id);
+            if (s?.id && !s.id.startsWith("sess-")) args.push("--session", s.id);
             return args;
           },
           attach(s) {

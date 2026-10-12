@@ -173,7 +173,7 @@ describe("Phase 5: Routing, Resilience & Hardening", () => {
     const msg = pending.find((m) => m.body === "hop pass-through body");
     assert.ok(msg, "message must remain pending under human-held lease");
     assert.equal(msg.from_agent, "codex");
-    assert.equal(msg.hops, 3);
+    assert.equal(msg.hops, 4, "agent-sent ask must increment hops from 3 to 4");
 
     const inboxProc = await runChild(process.execPath, [cli, "inbox", "claude"], {
       cwd: testRepo,
@@ -210,7 +210,7 @@ describe("Phase 5: Routing, Resilience & Hardening", () => {
     );
     assert.match(delivered.stdout, /urgent review request body/);
 
-    // Loop guard: stop_hook_active from stdin must short-circuit without claiming
+    // Loop guard: stop_hook_active from stdin must short-circuit without claiming (empty stdout on allow)
     const enq2 = await sendIpcRequest(ipcAddr, {
       action: "ask",
       payload: { from: "pi", to: "claude", body: "must stay pending" },
@@ -220,8 +220,7 @@ describe("Phase 5: Routing, Resilience & Hardening", () => {
       env: { ...process.env, MESH_IPC_ADDRESS: ipcAddr },
       input: JSON.stringify({ session_id: "abc", stop_hook_active: true }),
     });
-    const decision2 = JSON.parse(second.stdout.trim().split("\n").pop());
-    assert.equal(decision2.decision, "allow");
+    assert.equal(second.stdout.trim(), "", "allow path must write empty stdout");
     assert.equal(broker.repo.getMessage(enq2.ticket).status, "pending");
 
     const release = await sendIpcRequest(ipcAddr, {

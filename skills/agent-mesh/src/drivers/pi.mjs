@@ -13,7 +13,7 @@ export function createPiDriver() {
     bin: "pi",
     getArgv(session) {
       const args = ["--mode", "json"];
-      if (session?.id) {
+      if (session?.id && !session.id.startsWith("sess-")) {
         args.push("--session", session.id);
       }
       return args;
@@ -38,7 +38,10 @@ export function createPiDriver() {
     },
 
     attach(session) {
-      return ["pi", "--session", session.id];
+      if (session?.id && !session.id.startsWith("sess-")) {
+        return ["pi", "--session", session.id];
+      }
+      return ["pi"];
     },
   });
 }

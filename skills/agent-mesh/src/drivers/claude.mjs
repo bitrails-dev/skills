@@ -65,7 +65,9 @@ export function createClaudeDriver() {
       ];
 
       if (process.platform === "win32") {
-        argv.push("--allowedTools", "PowerShell");
+        argv.push("--allowedTools", "PowerShell,Read,Glob,Grep,Edit,Write");
+      } else {
+        argv.push("--allowedTools", "Bash,Read,Glob,Grep,Edit,Write");
       }
 
       if (session?.id && !session.id.startsWith("sess-") && session.id !== "default") {

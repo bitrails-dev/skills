@@ -163,3 +163,11 @@ interface HarnessDriver {
 2. Antigravity Driver (`drivers/antigravity.mjs`).
 3. Codex Driver (`drivers/codex.mjs`).
 4. End-to-end multi-agent swarm integration test (Claude Code writes code in worktree $\rightarrow$ Antigravity reviews diff $\rightarrow$ Pi generates tests $\rightarrow$ orchestrator verifies and merges).
+
+---
+
+### ADR-007: Inversion-of-Control Session Discovery & Lifecycle Presence
+- **Context**: Headless agents generating synthetic `sess-<ts>` IDs break CLI resume on harnesses expecting authentic UUIDs (Codex, Pi, OpenCode). Furthermore, user-invoked sessions open interactively in terminal tabs were undetectable without fragile OS process scraping.
+- **Decision**: Adopt Inversion of Control via lifecycle hooks. Harnesses self-announce their authentic session UUID, PID, and lifecycle events (`start`, `busy`, `idle`, `end`) via an atomic `session_event` IPC action. The broker validates process liveness via exact `process.kill(pid, 0)` checks (treating `ESRCH` as dead, and `EPERM` as alive).
+- **Targeted Addressing**: Messages support targeted session routing via `--to <agent>@<sessionId>`, isolating delivery between multiple open terminal windows of the same harness.
+- **Presence Hygiene**: Lifecycle hooks (`presence-hook.mjs`) emit zero stdout on `SessionStart` and `UserPromptSubmit` to avoid model context pollution, and emit empty stdout on allowed `Stop` decisions.

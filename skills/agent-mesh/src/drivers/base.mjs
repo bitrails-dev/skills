@@ -28,6 +28,12 @@ export function needsShellFallback(bin) {
  */
 export function spawnChild(bin, argv, opts = {}) {
   if (needsShellFallback(bin)) {
+    // Windows shell safety: validate against dangerous command injection metacharacters
+    for (const arg of argv) {
+      if (typeof arg === "string" && /[&|<>^%]/.test(arg)) {
+        throw new Error(`Argument contains forbidden shell metacharacters: ${arg}`);
+      }
+    }
     return spawn(bin, argv, { ...opts, shell: true });
   }
   return spawn(bin, argv, opts);

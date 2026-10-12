@@ -38,7 +38,7 @@ function readHookInput() {
 }
 
 const allow = () => {
-  process.stdout.write(JSON.stringify({ decision: "allow" }) + "\n");
+  process.exit(0);
 };
 
 async function main() {
@@ -49,13 +49,20 @@ async function main() {
     return allow();
   }
 
+  // Headless guard: if running as a background mesh turn, never block interactive stops
+  if (process.env.MESH_AGENT) {
+    return allow();
+  }
+
   const address = resolveIpcAddress(process.cwd());
+  const agentName = "claude";
+  const sessionId = input.session_id || null;
 
   try {
-    // Atomically claim messages so the headless broker doesn't double-process them
+    // Atomically claim messages for this agent and session
     const res = await sendIpcRequest(address, {
       action: "claim_inbox",
-      payload: { agent: "claude" },
+      payload: { agent: agentName, sessionId },
     });
 
     if (res.ok && res.messages && res.messages.length > 0) {

@@ -17,6 +17,23 @@ import { createCodexDriver } from "./drivers/codex.mjs";
 import { createAcpDriver } from "./drivers/acp.mjs";
 import { ensureAgentWorktree } from "./worktree.mjs";
 
+/**
+ * Safe process liveness check.
+ * On Windows and POSIX, process.kill(pid, 0) throws ESRCH if the process is dead.
+ * EPERM means the process is alive but belongs to another user / elevated context.
+ * @param {number} pid
+ * @returns {boolean}
+ */
+export function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+}
+
 export class AgentMeshBroker {
   /**
    * @param {string} cwd - Target repository root directory.
@@ -40,6 +57,7 @@ export class AgentMeshBroker {
     this.turnRetries = new Map(); // agentId -> consecutive failed turns
     this.messageRetries = new Map(); // ticketId -> retry attempts
     this.ipcServer = null;
+    this.maintenanceTimer = null;
     this.running = false;
 
     // Register built-in drivers
@@ -105,7 +123,14 @@ export class AgentMeshBroker {
     process.once("SIGINT", cleanup);
     process.once("SIGTERM", cleanup);
 
-    // 5. Initial check for pending messages across all registered harnesses
+    // 5. Start maintenance timer (30s) for background lease reaping and dispatch
+    this.maintenanceTimer = setInterval(() => {
+      this.reapStaleLeases();
+      this.scheduleDispatch();
+    }, 30000);
+    this.maintenanceTimer.unref();
+
+    // 6. Initial check for pending messages across all registered harnesses
     this.scheduleDispatch();
 
     return { ok: true, pid: process.pid, address: this.ipcAddress };
@@ -120,7 +145,15 @@ export class AgentMeshBroker {
       case "send":
       case "ask": {
         const msg = req.payload;
-        msg.to = this.resolveAgent(msg.to);
+        let toTarget = msg.to;
+        let toSession = msg.toSession || null;
+        if (typeof toTarget === "string" && toTarget.includes("@")) {
+          const parts = toTarget.split("@");
+          toTarget = parts[0];
+          toSession = parts[1];
+        }
+        msg.to = this.resolveAgent(toTarget);
+        msg.toSession = toSession;
         msg.from = this.resolveAgent(msg.from);
 
         if (!msg.id) msg.id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -164,9 +197,35 @@ export class AgentMeshBroker {
         return { ok: true, ticket: replyMsg.id, parentId: ticket };
       }
 
+      case "session_event": {
+        const { harness, sessionId, event, pid, cwd, origin } = req.payload;
+        const resolvedHarness = this.resolveAgent(harness);
+        const res = this.repo.updateSessionEvent({
+          harness: resolvedHarness,
+          sessionId,
+          event,
+          pid: Number(pid) || null,
+          cwd: cwd || this.cwd,
+          origin: origin || "interactive",
+        });
+
+        // Dual-writer rule: if a human starts interacting with a session currently used by a headless turn, abort it
+        if (event === "start" || event === "busy") {
+          if (this.activeTurns.has(resolvedHarness)) {
+            const currentTurn = this.activeTurns.get(resolvedHarness);
+            if (currentTurn.sessionId === sessionId) {
+              currentTurn.abort();
+            }
+          }
+        }
+
+        return { ok: true, state: res.state };
+      }
+
       case "status": {
         this.reapStaleLeases();
         const pending = this.repo.getPendingCounts();
+        const liveSessions = this.repo.listLiveSessions();
         const activeSessions = [];
         for (const [harness] of this.drivers) {
           const sess = this.repo.getActiveSession(harness);
@@ -179,6 +238,7 @@ export class AgentMeshBroker {
           busyAgents: Array.from(this.busyAgents),
           pendingCounts: pending,
           sessions: activeSessions,
+          liveSessions,
         };
       }
 
@@ -200,9 +260,10 @@ export class AgentMeshBroker {
       }
 
       case "claim_inbox": {
-        // H2: Atomically claims messages so interactive hooks consume them without duplicates
+        // Atomically claims messages so interactive hooks consume them without duplicates
         const targetAgent = this.resolveAgent(req.payload.agent);
-        const messages = this.repo.claimMessagesForAgent(targetAgent);
+        const sessionId = req.payload.sessionId || null;
+        const messages = this.repo.claimMessagesForAgent(targetAgent, sessionId);
         return { ok: true, messages };
       }
 
@@ -213,11 +274,9 @@ export class AgentMeshBroker {
           return { ok: false, error: `No driver registered for agent: ${agent}` };
         }
 
-        // If turn is in flight, abort it and restore claimed messages to pending
+        // If turn is in flight, abort it (its own cleanup restores messages and clears busy)
         if (this.activeTurns.has(agent)) {
           this.activeTurns.get(agent).abort();
-          this.busyAgents.delete(agent);
-          this.repo.restorePendingForAgent(agent);
         }
 
         // Track holder PID so stale leases can be reaped when the holder dies (H6)
@@ -270,19 +329,34 @@ export class AgentMeshBroker {
   }
 
   /**
-   * Releases human-held leases whose holder process is gone (H6).
-   * Holder is recorded as 'human-cli@<pid>'; leases without a PID are never reaped.
+   * Releases human-held leases whose holder process is gone (H6)
+   * and transitions dead interactive sessions to closed.
    */
   reapStaleLeases() {
+    // 1. Check all live sessions with a recorded PID
+    try {
+      const live = this.repo.listLiveSessions();
+      for (const sess of live) {
+        if (sess.pid && !isProcessAlive(sess.pid)) {
+          if (sess.origin === "interactive") {
+            this.repo.updateSessionState(sess.session_id, "closed", null);
+          } else if (sess.state === "human-held") {
+            this.repo.updateSessionState(sess.session_id, "idle", null);
+          }
+        }
+      }
+    } catch {}
+
+    // 2. Also check human-cli@<pid> lease_holders
     for (const [harness] of this.drivers) {
       const s = this.repo.getActiveSession(harness);
       if (s?.state !== "human-held" || !s.lease_holder?.includes("@")) continue;
-      const pid = Number(s.lease_holder.split("@").pop());
-      if (!Number.isInteger(pid) || pid <= 0) continue;
-      try {
-        process.kill(pid, 0); // Throws if the holder is gone
-      } catch {
-        this.repo.updateSessionState(s.session_id, "idle", null);
+      const match = s.lease_holder.match(/^human-cli@(\d+)$/);
+      if (match) {
+        const pid = Number(match[1]);
+        if (!isProcessAlive(pid)) {
+          this.repo.updateSessionState(s.session_id, "idle", null);
+        }
       }
     }
   }
@@ -299,8 +373,10 @@ export class AgentMeshBroker {
       if (this.busyAgents.has(agentId)) continue;
 
       // B1: Dual-Writer Protection: Skip automated turns if session lease is human-held
+      // or if an active interactive human session exists (it will consume via stop hook / prompt)
       const currentSession = this.repo.getActiveSession(agentId);
       if (currentSession?.state === "human-held") continue;
+      if (currentSession?.origin === "interactive" && currentSession?.state !== "closed") continue;
 
       // Atomically claim all pending messages for this agent
       const messages = this.repo.claimMessagesForAgent(agentId);
@@ -409,6 +485,7 @@ Process the message(s) above, take appropriate action, and reply via the CLI.`;
     }
 
     const abortController = new AbortController();
+    abortController.sessionId = session.session_id;
     this.activeTurns.set(agentId, abortController);
 
     /**
@@ -483,7 +560,9 @@ Process the message(s) above, take appropriate action, and reply via the CLI.`;
         handleFailure(`driver crashed: ${err.message}`);
       }
     } finally {
-      this.activeTurns.delete(agentId);
+      if (this.activeTurns.get(agentId) === abortController) {
+        this.activeTurns.delete(agentId);
+      }
     }
   }
 
@@ -492,6 +571,11 @@ Process the message(s) above, take appropriate action, and reply via the CLI.`;
    */
   async stop() {
     this.running = false;
+
+    if (this.maintenanceTimer) {
+      clearInterval(this.maintenanceTimer);
+      this.maintenanceTimer = null;
+    }
 
     // Abort active turns
     for (const [agentId, controller] of this.activeTurns) {

@@ -8,7 +8,7 @@ description: >-
 license: MIT
 compatibility: Requires Node 22+ (for built-in node:sqlite and native IPC) and Git. Works on Windows and POSIX.
 metadata:
-  version: 0.1.0
+  version: 1.0.0
 ---
 
 # Agent Mesh: Universal Inter-Harness Communication
@@ -35,26 +35,31 @@ node scripts/mesh.mjs start
 # 2. Check mesh status and active agent sessions
 node scripts/mesh.mjs status
 
-# 3. Send a non-blocking question to an agent
+# 3. Send a non-blocking question to an agent (or a specific live session)
 node scripts/mesh.mjs ask --to claude "Can you analyze the memory usage in src/broker.mjs?"
+node scripts/mesh.mjs ask --to claude@<session-uuid> "Targeted instruction for specific terminal"
 
-# 4. Inspect an agent's (or the human's) mailbox
+# 4. Announce an interactive session (or let hooks handle it)
+node scripts/mesh.mjs announce --harness claude --session <uuid> --pid <pid>
+
+# 5. Inspect an agent's (or the human's) mailbox
 node scripts/mesh.mjs inbox claude
 node scripts/mesh.mjs inbox human-cli --delivered
 
-# 5. View an agent's live event stream
+# 6. View an agent's live event stream
 node scripts/mesh.mjs watch claude
 
-# 6. Interactively attach to an agent session (acquires lease)
+# 7. Interactively attach to an agent session (acquires lease)
 node scripts/mesh.mjs attach opencode
 ```
 
-## Agent Identity & Reply Routing
+## Agent Identity, Session Discovery & Routing
 Broker-driven agent turns run with `MESH_AGENT`, `MESH_HOPS`, and `MESH_CONVERSATION` set, and the
 coalesced prompt embeds the mesh CLI path plus reply instructions. Agents reply by invoking the
 CLI (`mesh reply --ticket <id> --to <peer> "..."`); the CLI inherits `MESH_AGENT`/`MESH_HOPS`
 from the environment, so hop budgets survive across `ask` chains, not just reply chains.
-Messages addressed to `human-cli` wait in the mailbox until read via `mesh inbox human-cli`.
+Human interactive sessions announce themselves via hooks (`src/hooks/presence-hook.mjs`), allowing
+peer agents to route directly to live terminal windows without synthetic placeholder IDs.
 
 ## Architecture & Specifications
-See [SPEC.md](SPEC.md) for complete Architecture Decision Records (ADR 001–006), data models, and delivery contracts.
+See [SPEC.md](SPEC.md) for complete Architecture Decision Records (ADR 001–007), data models, and delivery contracts.
