@@ -5,6 +5,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -207,6 +208,44 @@ test("Lifecycle Hook Installer & Uninstaller Suite", async (t) => {
       const cmd = data.hooks[ev][0].hooks[0].command;
       assert.ok(cmd.includes("${CLAUDE_PLUGIN_ROOT}"));
       assert.ok(cmd.includes("presence-hook.mjs"));
+    }
+  });
+
+  await t.test("8. CLI --init and --uninstall work cleanly via CLI execution", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "mesh-cli-init-test-"));
+    const cliScript = join(import.meta.dirname, "../scripts/mesh.mjs");
+
+    try {
+      // 1. Run --init --project in tmpDir
+      const initProc = spawnSync(process.execPath, [cliScript, "--init", "--project"], {
+        cwd: tmpDir,
+        encoding: "utf8",
+      });
+      assert.equal(initProc.status, 0);
+      assert.ok(initProc.stdout.includes("AGENT MESH INITIALIZATION"));
+
+      // Verify files created
+      const claudePath = join(tmpDir, ".claude", "settings.json");
+      const agyPath = join(tmpDir, ".agents", "hooks.json");
+      assert.equal(existsSync(claudePath), true);
+      assert.equal(existsSync(agyPath), true);
+
+      // 2. Run --uninstall --project in tmpDir
+      const unProc = spawnSync(process.execPath, [cliScript, "--uninstall", "--project"], {
+        cwd: tmpDir,
+        encoding: "utf8",
+      });
+      assert.equal(unProc.status, 0);
+      assert.ok(unProc.stdout.includes("UNINSTALLING AGENT MESH REQUIREMENTS"));
+
+      // Verify hooks removed
+      const claudeData = JSON.parse(readFileSync(claudePath, "utf8"));
+      assert.equal(claudeData.hooks?.SessionStart, undefined);
+      const agyData = JSON.parse(readFileSync(agyPath, "utf8"));
+      assert.equal(agyData["agent-mesh-presence"], undefined);
+    } finally {
+      spawnSync(process.execPath, [cliScript, "stop"], { cwd: tmpDir });
+      rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 });

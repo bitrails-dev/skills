@@ -32,6 +32,88 @@ async function main() {
   const [,, cmd, ...args] = process.argv;
 
   switch (cmd) {
+    case "--init":
+    case "--install":
+    case "init":
+    case "setup":
+    case "install": {
+      const isProject = args.includes("--project");
+      const isGlobal = !isProject;
+      const scope = isGlobal ? "global" : "project";
+
+      console.log(`\n==================================================`);
+      console.log(`   AGENT MESH INITIALIZATION & REQUIREMENT SETUP  `);
+      console.log(`==================================================\n`);
+
+      const claudeScript = resolve(import.meta.dirname, "../src/hooks/presence-hook.mjs");
+      const agyScript = resolve(import.meta.dirname, "../src/hooks/agy-presence-hook.mjs");
+      const { claudePath, agyPath } = resolveHookTargets({ global: isGlobal }, rootDir);
+
+      // 1. Install Claude Code hooks
+      const cRes = installClaudeHooks(claudePath, claudeScript);
+      if (cRes.ok) {
+        console.log(`[Claude Code] Lifecycle presence hooks registered -> ${claudePath}`);
+        if (existsSync(`${claudePath}.bak`)) console.log(`  (Backup created: ${claudePath}.bak)`);
+      } else {
+        console.error(`[Claude Code] Failed to install hooks: ${cRes.error}`);
+      }
+
+      // 2. Install Antigravity hooks
+      const aRes = installAgyHooks(agyPath, agyScript);
+      if (aRes.ok) {
+        console.log(`[Antigravity] 'agent-mesh-presence' block registered -> ${agyPath}`);
+        if (existsSync(`${agyPath}.bak`)) console.log(`  (Backup created: ${agyPath}.bak)`);
+      } else {
+        console.error(`[Antigravity] Failed to install hooks: ${aRes.error}`);
+      }
+
+      // 3. Ensure broker daemon is running with latest code
+      try {
+        console.log(`\n[Broker Daemon] Verifying background daemon...`);
+        const broker = await ensureBroker({ rootDir, address: ipcAddress });
+        console.log(`[Broker Daemon] Active and healthy (PID: ${broker.pid}, v${broker.version || "1.1.0"}).`);
+        console.log(`[Broker Daemon] IPC Address: ${ipcAddress}`);
+      } catch (err) {
+        console.error(`[Broker Daemon] Error starting broker: ${err.message}`);
+      }
+
+      console.log(`\nAgent Mesh is fully initialized (${scope.toUpperCase()} scope)!`);
+      console.log(`Interactive terminals in Claude Code and Antigravity will now automatically self-announce.`);
+      console.log(`Run 'mesh status' anytime to inspect live sessions.\n`);
+      break;
+    }
+
+    case "--uninstall":
+    case "uninstall": {
+      const isProject = args.includes("--project");
+      const isGlobal = args.includes("--global");
+      const scopes = [];
+      if (isProject) scopes.push(false);
+      else if (isGlobal) scopes.push(true);
+      else scopes.push(true, false);
+
+      console.log(`\n--- UNINSTALLING AGENT MESH REQUIREMENTS ---`);
+      for (const globalScope of scopes) {
+        const { claudePath, agyPath, scope } = resolveHookTargets({ global: globalScope }, rootDir);
+        const cRes = uninstallClaudeHooks(claudePath);
+        if (cRes.ok && cRes.modified) {
+          console.log(`[Claude Code:${scope}] Removed agent-mesh hooks from ${claudePath}`);
+        }
+        const aRes = uninstallAgyHooks(agyPath);
+        if (aRes.ok && aRes.modified) {
+          console.log(`[Antigravity:${scope}] Removed 'agent-mesh-presence' block from ${agyPath}`);
+        }
+      }
+
+      try {
+        await stopBroker({ rootDir, address: ipcAddress });
+        console.log(`[Broker Daemon] Daemon stopped.`);
+      } catch {}
+
+      console.log(`\nAgent Mesh uninstallation complete.\n`);
+      break;
+    }
+
     case "start": {
       try {
         const broker = await ensureBroker({ rootDir, address: ipcAddress });
@@ -460,6 +542,8 @@ async function main() {
       console.log(`
 Agent Mesh CLI (v1.1.0)
 Commands:
+  --init, --install   Install all requirements, configure lifecycle hooks, and start broker
+  --uninstall         Cleanly remove hooks and stop the broker daemon
   start               Start the local mesh broker daemon in the background
   stop                Stop the running broker daemon
   status              Display current agent sessions, busy status, and queue depth

@@ -3,8 +3,9 @@ name: agent-mesh
 description: >-
   Universal inter-harness agent mesh orchestrator enabling asynchronous, peer-to-peer, and event-driven communication
   across Claude Code, Antigravity, OpenCode, Pi, Codex, and any ACP-compliant agent with live session visibility,
-  git worktree isolation, and session leasing. Use whenever the user asks to coordinate multiple AI agent harnesses,
-  have agents communicate across harnesses, run cross-agent workflows, or view/attach to agent sessions live.
+  git worktree isolation, and session leasing. Supports one-command setup via `mesh --init` or `mesh --install`,
+  and clean removal via `mesh --uninstall`. Use whenever the user asks to coordinate multiple AI agent harnesses,
+  have agents communicate across harnesses, run cross-agent workflows, view/attach to agent sessions live, or initialize the mesh.
 license: MIT
 compatibility: Requires Node 22+ (for built-in node:sqlite and native IPC) and Git. Works on Windows and POSIX.
 metadata:
@@ -29,32 +30,31 @@ Instead of rigid 1-to-1 RPC relays, agents interact via an atomic local Broker d
 ## Quick Start CLI
 
 ```powershell
-# 1. Install lifecycle hooks for Claude Code and Antigravity
-node scripts/mesh.mjs hooks install --global
-node scripts/mesh.mjs hooks doctor
+# 1. One-step initialization: registers hooks globally and starts broker daemon
+node scripts/mesh.mjs --init
 
-# 2. Start the local mesh broker daemon (auto-upgrades if outdated)
-node scripts/mesh.mjs start
-
-# 3. Check mesh status and active agent sessions
+# 2. Check mesh status and active agent sessions
 node scripts/mesh.mjs status
 
-# 4. Send a non-blocking question to an agent (or a specific live session)
+# 3. Send a non-blocking question to an agent (or a specific live session)
 node scripts/mesh.mjs ask --to claude "Can you analyze the memory usage in src/broker.mjs?"
 node scripts/mesh.mjs ask --to claude@<session-uuid> "Targeted instruction for specific terminal"
 
-# 5. Announce an interactive session (or let hooks handle it)
+# 4. Announce an interactive session (or let hooks handle it)
 node scripts/mesh.mjs announce --harness claude --session <uuid> --pid <pid>
 
-# 6. Inspect an agent's (or the human's) mailbox
+# 5. Inspect an agent's (or the human's) mailbox
 node scripts/mesh.mjs inbox claude
 node scripts/mesh.mjs inbox human-cli --delivered
 
-# 7. View an agent's live event stream
+# 6. View an agent's live event stream
 node scripts/mesh.mjs watch claude
 
-# 8. Interactively attach to an agent session (acquires lease)
+# 7. Interactively attach to an agent session (acquires lease)
 node scripts/mesh.mjs attach opencode
+
+# 8. Cleanly remove hooks and stop daemon
+node scripts/mesh.mjs --uninstall
 ```
 
 ## Agent Identity, Session Discovery & Routing
