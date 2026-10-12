@@ -6,11 +6,18 @@
  * sending asynchronous messages, and watching live agent event streams.
  */
 
-import { spawn, execFileSync } from "node:child_process";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { getIpcAddress, sendIpcRequest, findRepoRoot, resolveIpcAddress } from "../src/ipc.mjs";
 import { spawnChild } from "../src/drivers/base.mjs";
+import { ensureBroker, stopBroker, isProcessAlive, getBrokerInfo } from "../src/daemon.mjs";
+import {
+  installClaudeHooks,
+  uninstallClaudeHooks,
+  installAgyHooks,
+  uninstallAgyHooks,
+  resolveHookTargets,
+} from "../src/hooks/installer.mjs";
 
 // C4: when invoked from inside an agent turn, inherit identity and hop budget
 const meshAgent = process.env.MESH_AGENT || "human-cli";
@@ -19,92 +26,35 @@ const meshHops = Number(process.env.MESH_HOPS || 0);
 const cwd = process.cwd();
 const rootDir = findRepoRoot(cwd);
 const meshDir = join(rootDir, ".agent-mesh");
-const brokerPidPath = join(meshDir, "broker.json");
 const ipcAddress = resolveIpcAddress(rootDir);
-
-function isProcessAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return err.code === "EPERM";
-  }
-}
-
-async function getBrokerInfo() {
-  if (!existsSync(brokerPidPath)) return null;
-  try {
-    const data = JSON.parse(readFileSync(brokerPidPath, "utf8"));
-    if (isProcessAlive(data.pid)) {
-      return data;
-    }
-    // Stale PID file
-    unlinkSync(brokerPidPath);
-    return null;
-  } catch {
-    return null;
-  }
-}
 
 async function main() {
   const [,, cmd, ...args] = process.argv;
 
   switch (cmd) {
     case "start": {
-      const existing = await getBrokerInfo();
-      if (existing) {
-        console.log(`agent-mesh broker is already running (PID: ${existing.pid}).`);
-        process.exit(0);
-      }
-
-      const brokerScript = resolve(import.meta.dirname, "../src/broker.mjs");
-      const child = spawn(process.execPath, [brokerScript], {
-        cwd: rootDir,
-        detached: true,
-        stdio: "ignore",
-        windowsHide: true,
-      });
-
-      child.unref();
-
-      // Poll briefly for broker.json to appear
-      let started = false;
-      for (let i = 0; i < 20; i++) {
-        await new Promise((r) => setTimeout(r, 100));
-        if (await getBrokerInfo()) {
-          started = true;
-          break;
-        }
-      }
-
-      if (started) {
-        console.log(`agent-mesh broker successfully started in background.`);
+      try {
+        const broker = await ensureBroker({ rootDir, address: ipcAddress });
+        console.log(`agent-mesh broker is active (PID: ${broker.pid}, v${broker.version || "1.1.0"}).`);
         console.log(`IPC Address: ${ipcAddress}`);
-      } else {
-        console.error("Failed to confirm broker startup. Check system permissions.");
+      } catch (err) {
+        console.error(`Failed to start broker: ${err.message}`);
         process.exit(1);
       }
       break;
     }
 
     case "stop": {
-      const broker = await getBrokerInfo();
-      if (!broker) {
-        console.log("No running agent-mesh broker found.");
-        process.exit(0);
-      }
-
       try {
-        if (process.platform === "win32") {
-          execFileSync("taskkill", ["/PID", String(broker.pid), "/T", "/F"], { stdio: "ignore" });
+        const res = await stopBroker({ rootDir, address: ipcAddress });
+        if (res.message) {
+          console.log(res.message);
         } else {
-          process.kill(broker.pid, "SIGTERM");
+          console.log(`agent-mesh broker (PID: ${res.pid}) stopped.`);
         }
-        if (existsSync(brokerPidPath)) unlinkSync(brokerPidPath);
-        console.log(`agent-mesh broker (PID: ${broker.pid}) stopped.`);
       } catch (err) {
         console.error(`Error stopping broker: ${err.message}`);
+        process.exit(1);
       }
       break;
     }
@@ -422,13 +372,100 @@ async function main() {
       break;
     }
 
+    case "hooks": {
+      const sub = args[0] || "install";
+      const isGlobal = args.includes("--global");
+      const harnessIdx = args.indexOf("--harness");
+      const harness = harnessIdx !== -1 && args[harnessIdx + 1] ? args[harnessIdx + 1].toLowerCase() : "all";
+
+      const claudeScript = resolve(import.meta.dirname, "../src/hooks/presence-hook.mjs");
+      const agyScript = resolve(import.meta.dirname, "../src/hooks/agy-presence-hook.mjs");
+      const { claudePath, agyPath, scope } = resolveHookTargets({ global: isGlobal }, rootDir);
+
+      if (sub === "install") {
+        console.log(`\n--- INSTALLING AGENT MESH LIFECYCLE HOOKS (${scope.toUpperCase()}) ---`);
+        if (harness === "all" || harness === "claude") {
+          const cRes = installClaudeHooks(claudePath, claudeScript);
+          if (cRes.ok) {
+            console.log(`[claude:${scope}] Registered presence hook (4 events) -> ${claudePath}`);
+            if (existsSync(`${claudePath}.bak`)) console.log(`  (Backup created: ${claudePath}.bak)`);
+          } else {
+            console.error(`[claude:${scope}] Failed to install hooks: ${cRes.error}`);
+          }
+        }
+        if (harness === "all" || harness === "agy" || harness === "antigravity") {
+          const aRes = installAgyHooks(agyPath, agyScript);
+          if (aRes.ok) {
+            console.log(`[antigravity:${scope}] Registered 'agent-mesh-presence' block -> ${agyPath}`);
+            if (existsSync(`${agyPath}.bak`)) console.log(`  (Backup created: ${agyPath}.bak)`);
+          } else {
+            console.error(`[antigravity:${scope}] Failed to install hooks: ${aRes.error}`);
+          }
+        }
+        console.log(`\nHooks successfully installed. Interactive sessions will now self-announce to agent-mesh.`);
+      } else if (sub === "uninstall") {
+        console.log(`\n--- UNINSTALLING AGENT MESH LIFECYCLE HOOKS (${scope.toUpperCase()}) ---`);
+        if (harness === "all" || harness === "claude") {
+          const cRes = uninstallClaudeHooks(claudePath);
+          if (cRes.ok && cRes.modified) {
+            console.log(`[claude:${scope}] Removed agent-mesh hooks from ${claudePath}`);
+          } else {
+            console.log(`[claude:${scope}] No agent-mesh hooks found in ${claudePath}`);
+          }
+        }
+        if (harness === "all" || harness === "agy" || harness === "antigravity") {
+          const aRes = uninstallAgyHooks(agyPath);
+          if (aRes.ok && aRes.modified) {
+            console.log(`[antigravity:${scope}] Removed 'agent-mesh-presence' block from ${agyPath}`);
+          } else {
+            console.log(`[antigravity:${scope}] No agent-mesh hooks found in ${agyPath}`);
+          }
+        }
+        console.log(`\nUninstall complete.`);
+      } else if (sub === "doctor") {
+        console.log(`\n--- AGENT MESH HOOKS DIAGNOSTICS (${scope.toUpperCase()}) ---`);
+        console.log(`Claude Code settings: ${claudePath}`);
+        if (existsSync(claudePath)) {
+          try {
+            const cData = JSON.parse(readFileSync(claudePath, "utf8"));
+            const hasClaude = Object.values(cData.hooks || {}).some((groups) =>
+              groups.some((g) => (g.hooks || []).some((h) => /presence-hook\.mjs/.test(h.command || "")))
+            );
+            console.log(`  Status: ${hasClaude ? "Installed (ACTIVE)" : "Not installed"}`);
+          } catch {
+            console.log(`  Status: Error reading JSON`);
+          }
+        } else {
+          console.log(`  Status: File does not exist`);
+        }
+
+        console.log(`Antigravity hooks: ${agyPath}`);
+        if (existsSync(agyPath)) {
+          try {
+            const aData = JSON.parse(readFileSync(agyPath, "utf8"));
+            const hasAgy = Boolean(aData["agent-mesh-presence"]);
+            console.log(`  Status: ${hasAgy ? "Installed (ACTIVE)" : "Not installed"}`);
+          } catch {
+            console.log(`  Status: Error reading JSON`);
+          }
+        } else {
+          console.log(`  Status: File does not exist`);
+        }
+        console.log("");
+      }
+      break;
+    }
+
     default:
       console.log(`
-Agent Mesh CLI (v0.1.0)
+Agent Mesh CLI (v1.1.0)
 Commands:
   start               Start the local mesh broker daemon in the background
   stop                Stop the running broker daemon
   status              Display current agent sessions, busy status, and queue depth
+  hooks install       Install lifecycle hooks into Claude Code settings and Antigravity
+  hooks uninstall     Remove agent-mesh hooks cleanly
+  hooks doctor        Inspect configuration and verify hook registration
   ask --to <agent>    Enqueue a non-blocking question for an agent (returns ticket)
   send --to <agent>   Send a one-way notification message
   reply --ticket <id> --to <agent>  Reply to a previous question ticket

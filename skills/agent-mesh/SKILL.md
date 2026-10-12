@@ -8,7 +8,7 @@ description: >-
 license: MIT
 compatibility: Requires Node 22+ (for built-in node:sqlite and native IPC) and Git. Works on Windows and POSIX.
 metadata:
-  version: 1.0.0
+  version: 1.1.0
 ---
 
 # Agent Mesh: Universal Inter-Harness Communication
@@ -18,8 +18,8 @@ metadata:
 Instead of rigid 1-to-1 RPC relays, agents interact via an atomic local Broker daemon using asynchronous messaging, Git worktree isolation, and session leasing for live human inspection.
 
 ## Supported Harnesses & Tiers
-- **Claude Code (`claude`)**: Continuous `stream-json` stdio or resume mode.
-- **Google Antigravity (`agy`)**: Headless print mode with project session resumption.
+- **Claude Code (`claude`)**: Continuous `stream-json` stdio or resume mode. Automatic plugin hooks via `hooks/hooks.json`.
+- **Google Antigravity (`agy`)**: Headless print mode with project session resumption and strict JSON lifecycle hooks.
 - **OpenCode (`opencode`)**: CLI run mode. *(Experimental: server mode endpoint not yet verified against `opencode serve`.)*
 - **Pi (`pi`)**: RPC stdio mode (`pi --mode rpc`) or session resumption.
 - **Codex (`codex`)**: `codex exec --json`. *(Experimental: event names pending verification against installed CLI version.)*
@@ -29,27 +29,31 @@ Instead of rigid 1-to-1 RPC relays, agents interact via an atomic local Broker d
 ## Quick Start CLI
 
 ```powershell
-# 1. Start the local mesh broker daemon
+# 1. Install lifecycle hooks for Claude Code and Antigravity
+node scripts/mesh.mjs hooks install --global
+node scripts/mesh.mjs hooks doctor
+
+# 2. Start the local mesh broker daemon (auto-upgrades if outdated)
 node scripts/mesh.mjs start
 
-# 2. Check mesh status and active agent sessions
+# 3. Check mesh status and active agent sessions
 node scripts/mesh.mjs status
 
-# 3. Send a non-blocking question to an agent (or a specific live session)
+# 4. Send a non-blocking question to an agent (or a specific live session)
 node scripts/mesh.mjs ask --to claude "Can you analyze the memory usage in src/broker.mjs?"
 node scripts/mesh.mjs ask --to claude@<session-uuid> "Targeted instruction for specific terminal"
 
-# 4. Announce an interactive session (or let hooks handle it)
+# 5. Announce an interactive session (or let hooks handle it)
 node scripts/mesh.mjs announce --harness claude --session <uuid> --pid <pid>
 
-# 5. Inspect an agent's (or the human's) mailbox
+# 6. Inspect an agent's (or the human's) mailbox
 node scripts/mesh.mjs inbox claude
 node scripts/mesh.mjs inbox human-cli --delivered
 
-# 6. View an agent's live event stream
+# 7. View an agent's live event stream
 node scripts/mesh.mjs watch claude
 
-# 7. Interactively attach to an agent session (acquires lease)
+# 8. Interactively attach to an agent session (acquires lease)
 node scripts/mesh.mjs attach opencode
 ```
 
@@ -58,8 +62,8 @@ Broker-driven agent turns run with `MESH_AGENT`, `MESH_HOPS`, and `MESH_CONVERSA
 coalesced prompt embeds the mesh CLI path plus reply instructions. Agents reply by invoking the
 CLI (`mesh reply --ticket <id> --to <peer> "..."`); the CLI inherits `MESH_AGENT`/`MESH_HOPS`
 from the environment, so hop budgets survive across `ask` chains, not just reply chains.
-Human interactive sessions announce themselves via hooks (`src/hooks/presence-hook.mjs`), allowing
-peer agents to route directly to live terminal windows without synthetic placeholder IDs.
+Human interactive sessions announce themselves via hooks (`src/hooks/presence-hook.mjs` for Claude,
+`src/hooks/agy-presence-hook.mjs` for Antigravity), allowing peer agents to route directly to live terminal windows without synthetic placeholder IDs.
 
 ## Architecture & Specifications
-See [SPEC.md](SPEC.md) for complete Architecture Decision Records (ADR 001–007), data models, and delivery contracts.
+See [SPEC.md](SPEC.md) for complete Architecture Decision Records (ADR 001–008), data models, and delivery contracts.

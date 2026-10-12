@@ -8,33 +8,7 @@
  */
 
 import { resolveIpcAddress, sendIpcRequest } from "../ipc.mjs";
-
-/**
- * Reads Claude Code hook input from stdin.
- * @returns {Promise<object>} Parsed hook payload ({} on missing/invalid input).
- */
-function readHookInput() {
-  return new Promise((resolve) => {
-    let data = "";
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      try {
-        resolve(JSON.parse(data));
-      } catch {
-        resolve({});
-      }
-    };
-
-    if (process.stdin.isTTY) return finish();
-
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => (data += chunk));
-    process.stdin.on("end", finish);
-    setTimeout(finish, 1000).unref();
-  });
-}
+import { readStdinJson, emitJson } from "./common.mjs";
 
 /**
  * Resolves the parent Claude Code process ID.
@@ -46,7 +20,7 @@ function resolveHarnessPid() {
 }
 
 async function main() {
-  const input = await readHookInput();
+  const input = await readStdinJson();
   const eventName = input.hook_event_name || (input.stop_hook_active !== undefined ? "Stop" : "SessionStart");
   const sessionId = input.session_id;
 
@@ -117,7 +91,7 @@ async function main() {
             decision: "block",
             reason: `[AGENT-MESH INBOX NOTIFICATION]\nYou have ${res.messages.length} message(s) waiting from other agents in the mesh:\n\n${formatted}\n\nPlease review and respond as appropriate.`,
           };
-          process.stdout.write(JSON.stringify(payload) + "\n");
+          await emitJson(payload);
 
           // Acknowledge delivery
           await sendIpcRequest(address, {

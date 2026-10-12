@@ -73,66 +73,136 @@ export function resolveIpcAddress(dir = process.cwd()) {
 }
 
 /**
- * Creates and starts an IPC server.
+ * Probes an IPC address by attempting a lightweight TCP/socket/pipe connection.
+ * @param {string} address - Pipe or socket address.
+ * @param {number} [timeoutMs=250] - Probe timeout in milliseconds.
+ * @returns {Promise<boolean>} True if connection established, false if refused or timed out.
+ */
+export function probeAddress(address, timeoutMs = 250) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const socket = createConnection(address);
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      try {
+        socket.destroy();
+      } catch {}
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    timer.unref?.();
+
+    socket.on("connect", () => {
+      clearTimeout(timer);
+      finish(true);
+    });
+
+    socket.on("error", () => {
+      clearTimeout(timer);
+      finish(false);
+    });
+  });
+}
+
+/**
+ * Creates and starts an IPC server with EADDRINUSE retry resilience.
  * @param {string} address - Pipe or socket address.
  * @param {(req: object) => Promise<object>} requestHandler - Handler returning response payload.
+ * @param {{ retryMs?: number }} [options={}] - Options for connection handling.
  * @returns {Promise<import("node:net").Server>}
  */
-export function startIpcServer(address, requestHandler) {
+export function startIpcServer(address, requestHandler, options = {}) {
+  const retryMs = options.retryMs ?? 3000;
+  const startTime = Date.now();
+
   return new Promise((resolve, reject) => {
-    // POSIX clean-up of stale socket files
-    if (process.platform !== "win32" && existsSync(address)) {
-      try {
-        unlinkSync(address);
-      } catch (err) {
-        return reject(new Error(`Failed to unlink stale socket ${address}: ${err.message}`));
-      }
-    }
+    let settled = false;
+    let probed = false;
+    let server = null;
 
-    const server = createServer((socket) => {
-      let buffer = "";
-
-      socket.on("data", async (chunk) => {
-        buffer += chunk.toString("utf8");
-
-        if (buffer.length > MAX_FRAME_BYTES) {
-          socket.destroy(new Error("IPC frame exceeded maximum size limit."));
-          return;
-        }
-
-        let newlineIndex;
-        while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
-          const line = buffer.slice(0, newlineIndex).trimEnd();
-          buffer = buffer.slice(newlineIndex + 1);
-
-          if (!line) continue;
-
+    const cleanupStale = async () => {
+      if (process.platform !== "win32" && existsSync(address)) {
+        const isLive = await probeAddress(address, 300);
+        if (!isLive) {
           try {
-            const req = JSON.parse(line);
-            const res = await requestHandler(req);
-            socket.end(`${JSON.stringify(res)}\n`);
-          } catch (err) {
-            socket.end(`${JSON.stringify({ ok: false, error: err.message })}\n`);
-          }
+            unlinkSync(address);
+          } catch {}
         }
+      }
+    };
+
+    const tryListen = async () => {
+      if (server) {
+        try {
+          server.close();
+        } catch {}
+      }
+
+      await cleanupStale();
+
+      server = createServer((socket) => {
+        let buffer = "";
+
+        socket.on("data", async (chunk) => {
+          buffer += chunk.toString("utf8");
+
+          if (buffer.length > MAX_FRAME_BYTES) {
+            socket.destroy(new Error("IPC frame exceeded maximum size limit."));
+            return;
+          }
+
+          let newlineIndex;
+          while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
+            const line = buffer.slice(0, newlineIndex).trimEnd();
+            buffer = buffer.slice(newlineIndex + 1);
+
+            if (!line) continue;
+
+            try {
+              const req = JSON.parse(line);
+              const res = await requestHandler(req);
+              socket.end(`${JSON.stringify(res)}\n`);
+            } catch (err) {
+              socket.end(`${JSON.stringify({ ok: false, error: err.message })}\n`);
+            }
+          }
+        });
+
+        socket.on("end", () => {
+          socket.destroy();
+        });
+
+        socket.on("error", () => {
+          socket.destroy();
+        });
       });
 
-      socket.on("end", () => {
-        socket.destroy();
+      server.on("error", async (err) => {
+        if (settled) return;
+
+        const elapsed = Date.now() - startTime;
+        if (err.code === "EADDRINUSE" && elapsed < retryMs) {
+          if (process.platform !== "win32" && !probed) {
+            probed = true;
+            await cleanupStale();
+          }
+          await new Promise((r) => setTimeout(r, 200));
+          return tryListen();
+        }
+
+        reject(err);
       });
 
-      socket.on("error", () => {
-        socket.destroy();
+      server.listen(address, () => {
+        settled = true;
+        resolve(server);
       });
-    });
+    };
 
-    server.listen(address, () => {
-      resolve(server);
-    });
-
-    server.on("error", (err) => {
-      reject(err);
-    });
+    tryListen().catch(reject);
   });
 }
 

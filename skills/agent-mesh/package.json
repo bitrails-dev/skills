@@ -1,13 +1,13 @@
 {
   "name": "agent-mesh",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Universal inter-harness coordination mesh for Claude, Antigravity, OpenCode, Pi, and Codex",
   "type": "module",
   "bin": {
     "mesh": "./scripts/mesh.mjs"
   },
   "scripts": {
-    "test": "node --test tests/phase1-test.mjs tests/phase2-test.mjs tests/swarm-test.mjs tests/resilience-test.mjs tests/mesh-routing-test.mjs tests/presence-test.mjs"
+    "test": "node --test tests/phase1-test.mjs tests/phase2-test.mjs tests/swarm-test.mjs tests/resilience-test.mjs tests/mesh-routing-test.mjs tests/presence-test.mjs tests/version-migration-test.mjs tests/hooks-install-test.mjs tests/agy-adapter-test.mjs"
   },
   "keywords": [
     "agent-mesh",

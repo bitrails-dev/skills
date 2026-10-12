@@ -171,3 +171,13 @@ interface HarnessDriver {
 - **Decision**: Adopt Inversion of Control via lifecycle hooks. Harnesses self-announce their authentic session UUID, PID, and lifecycle events (`start`, `busy`, `idle`, `end`) via an atomic `session_event` IPC action. The broker validates process liveness via exact `process.kill(pid, 0)` checks (treating `ESRCH` as dead, and `EPERM` as alive).
 - **Targeted Addressing**: Messages support targeted session routing via `--to <agent>@<sessionId>`, isolating delivery between multiple open terminal windows of the same harness.
 - **Presence Hygiene**: Lifecycle hooks (`presence-hook.mjs`) emit zero stdout on `SessionStart` and `UserPromptSubmit` to avoid model context pollution, and emit empty stdout on allowed `Stop` decisions.
+
+---
+
+### ADR-008: Daemon Version Handshake, Drain-and-Rebind, & Multi-Harness Hook Installer
+- **Context**: Updating the skill via git pull or package managers leaves stale detached broker daemons running in memory. The stale daemon blocks the Named Pipe / socket and runs outdated code. Furthermore, skill managers copy files only and cannot register harness lifecycle hooks automatically.
+- **Decision**:
+  1. **Version Handshake**: `broker.json` and IPC `status`/`ping` report `version` from `package.json`.
+  2. **Drain-and-Rebind on Contact**: CLI commands verify broker freshness. When an older broker is encountered, the CLI signals `{ action: "restart" }`. The old broker closes its dispatch gate, awaits in-flight turns (up to 5s), checkpoints SQLite WAL (`PRAGMA wal_checkpoint(TRUNCATE)`), closes the IPC server (releasing the pipe handle first), unlinks `broker.json`, and exits. The CLI spawns the updated daemon. If an unversioned legacy broker is encountered, fallback termination is invoked.
+  3. **EADDRINUSE Retry**: `startIpcServer` retries binding for up to 3s to absorb OS handle release lag.
+  4. **Universal Hook Installer**: Shipped static plugin hooks (`hooks/hooks.json` via `${CLAUDE_PLUGIN_ROOT}`) alongside CLI installer (`mesh hooks install/uninstall/doctor`) supporting Claude Code (`settings.json`) and Antigravity (`hooks.json` with strict JSON I/O and `conversationId`).

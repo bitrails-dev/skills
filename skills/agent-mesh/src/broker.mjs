@@ -16,6 +16,7 @@ import { createAntigravityDriver } from "./drivers/antigravity.mjs";
 import { createCodexDriver } from "./drivers/codex.mjs";
 import { createAcpDriver } from "./drivers/acp.mjs";
 import { ensureAgentWorktree } from "./worktree.mjs";
+import { VERSION } from "./version.mjs";
 
 /**
  * Safe process liveness check.
@@ -36,10 +37,20 @@ export function isProcessAlive(pid) {
 
 export class AgentMeshBroker {
   /**
-   * @param {string} cwd - Target repository root directory.
+   * @param {string} [cwd=process.cwd()] - Target repository root directory.
+   * @param {object} [options={}] - Optional broker configuration.
+   * @param {string} [options.version] - Broker version override.
+   * @param {number} [options.drainTimeoutMs] - Timeout in ms for draining active turns.
    */
-  constructor(cwd = process.cwd()) {
+  constructor(cwd = process.cwd(), options = {}) {
     this.cwd = resolve(cwd);
+    this.version = options.version !== undefined ? options.version : VERSION;
+    this.drainTimeoutMs = options.drainTimeoutMs ?? 5000;
+    this.draining = false;
+    this.stopped = new Promise((resolve) => {
+      this.stoppedResolve = resolve;
+    });
+
     this.meshDir = join(this.cwd, ".agent-mesh");
     this.logsDir = join(this.meshDir, "logs");
     this.dbPath = join(this.meshDir, "mesh.db");
@@ -103,20 +114,17 @@ export class AgentMeshBroker {
     // 2. B2: Requeue any messages that were left in 'claimed' state by a previous crash
     this.db.exec("UPDATE messages SET status = 'pending' WHERE status = 'claimed';");
 
-    // 3. Record daemon PID
-    writeFileSync(
-      this.brokerPidPath,
-      JSON.stringify(
-        {
-          pid: process.pid,
-          cwd: this.cwd,
-          ipcAddress: this.ipcAddress,
-          startedAt: Date.now(),
-        },
-        null,
-        2
-      )
-    );
+    // 3. Record daemon PID and active version (omitted if null to simulate legacy daemon)
+    const brokerMeta = {
+      pid: process.pid,
+      cwd: this.cwd,
+      ipcAddress: this.ipcAddress,
+      startedAt: Date.now(),
+    };
+    if (this.version) {
+      brokerMeta.version = this.version;
+    }
+    writeFileSync(this.brokerPidPath, JSON.stringify(brokerMeta, null, 2));
 
     // 4. Register process exit cleanup
     const cleanup = () => this.stop();
@@ -141,7 +149,21 @@ export class AgentMeshBroker {
    * @param {object} req
    */
   async handleIpcRequest(req) {
+    if (this.draining && req.action !== "ping") {
+      return { ok: false, error: "broker is draining", retryable: true };
+    }
+
     switch (req.action) {
+      case "ping":
+        return { ok: true, version: this.version || undefined, pid: process.pid };
+
+      case "restart":
+      case "shutdown": {
+        this.draining = true;
+        setImmediate(() => this.gracefulShutdown());
+        return { ok: true, draining: true, version: this.version };
+      }
+
       case "send":
       case "ask": {
         const msg = req.payload;
@@ -235,6 +257,7 @@ export class AgentMeshBroker {
         return {
           ok: true,
           pid: process.pid,
+          version: this.version,
           busyAgents: Array.from(this.busyAgents),
           pendingCounts: pending,
           sessions: activeSessions,
@@ -567,25 +590,49 @@ Process the message(s) above, take appropriate action, and reply via the CLI.`;
   }
 
   /**
-   * Shuts down the broker and IPC server cleanly.
+   * Shuts down the broker and IPC server cleanly with in-flight drain and WAL checkpoint.
+   * @param {{ drainMs?: number }} [options={}]
    */
-  async stop() {
+  async gracefulShutdown({ drainMs } = {}) {
     this.running = false;
+    this.draining = true;
 
     if (this.maintenanceTimer) {
       clearInterval(this.maintenanceTimer);
       this.maintenanceTimer = null;
     }
 
-    // Abort active turns
-    for (const [agentId, controller] of this.activeTurns) {
+    const timeout = drainMs !== undefined ? drainMs : this.drainTimeoutMs;
+    const startDrain = Date.now();
+    while (this.activeTurns.size > 0 && Date.now() - startDrain < timeout) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    // Abort any remaining active turns (aborted controllers trigger turn cleanup to restore messages)
+    for (const [, controller] of this.activeTurns) {
       controller.abort();
+    }
+
+    // Wait briefly for aborted turns to finish their cleanup/finally blocks
+    const abortWait = Date.now();
+    while (this.activeTurns.size > 0 && Date.now() - abortWait < 500) {
+      await new Promise((r) => setTimeout(r, 20));
     }
     this.activeTurns.clear();
 
-    // Close IPC server
+    // Checkpoint SQLite WAL before releasing pipe
+    if (this.db) {
+      try {
+        this.db.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+      } catch {}
+    }
+
+    // Close IPC server and force close any lingering client sockets
     if (this.ipcServer) {
-      this.ipcServer.close();
+      await new Promise((res) => {
+        this.ipcServer.close(() => res());
+        this.ipcServer.closeAllConnections?.();
+      });
       this.ipcServer = null;
     }
 
@@ -600,8 +647,20 @@ Process the message(s) above, take appropriate action, and reply via the CLI.`;
     if (this.db) {
       try {
         this.db.close();
+        this.db = null;
       } catch {}
     }
+
+    if (this.stoppedResolve) {
+      this.stoppedResolve();
+    }
+  }
+
+  /**
+   * Immediate shutdown alias for test teardown and signal handlers.
+   */
+  async stop() {
+    return this.gracefulShutdown({ drainMs: 0 });
   }
 }
 
@@ -611,11 +670,16 @@ if (process.argv[1]?.endsWith("broker.mjs")) {
   broker
     .start()
     .then((info) => {
-      console.log(`agent-mesh broker started (PID: ${info.pid})`);
+      console.log(`agent-mesh broker started (PID: ${info.pid}, v${broker.version})`);
       console.log(`IPC Address: ${info.address}`);
     })
     .catch((err) => {
       console.error(`Failed to start broker: ${err.message}`);
       process.exit(1);
     });
+
+  // Runner terminates when graceful shutdown settles
+  broker.stopped.then(() => {
+    process.exit(0);
+  });
 }
