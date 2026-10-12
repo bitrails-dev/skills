@@ -12,12 +12,67 @@ import { getIpcAddress, sendIpcRequest, findRepoRoot, resolveIpcAddress } from "
 import { spawnChild } from "../src/drivers/base.mjs";
 import { ensureBroker, stopBroker, isProcessAlive, getBrokerInfo } from "../src/daemon.mjs";
 import {
+  installHarness,
+  uninstallHarness,
+  diagnoseHarness,
+  autoDiscoverHarnesses,
+  normalizeHarnessName,
+  SUPPORTED_HARNESSES,
   installClaudeHooks,
   uninstallClaudeHooks,
   installAgyHooks,
   uninstallAgyHooks,
   resolveHookTargets,
 } from "../src/hooks/installer.mjs";
+
+/**
+ * Parses harness targets and scope flags from command arguments.
+ * Supports:
+ * - Direct params: mesh --init agy,claude
+ * - Space separated: mesh --init agy claude opencode
+ * - Flag assignments: mesh --init=pi
+ * - Scope flags: --project, --global (defaults to global)
+ * @param {string} cmd
+ * @param {string[]} rawArgs
+ * @returns {{ harnesses: string[], isProject: boolean, isGlobal: boolean }}
+ */
+function parseHarnessSelection(cmd, rawArgs) {
+  const isProject = rawArgs.includes("--project");
+  const isGlobal = rawArgs.includes("--global") || !isProject;
+  const filteredArgs = rawArgs.filter((a) => a !== "--project" && a !== "--global");
+
+  const candidates = [];
+
+  // Check inline value like --init=agy,claude or --install=pi
+  if (cmd && cmd.includes("=")) {
+    const inline = cmd.split("=")[1];
+    if (inline) candidates.push(...inline.split(","));
+  }
+
+  // Check --harness flag
+  const hIdx = filteredArgs.indexOf("--harness");
+  if (hIdx !== -1 && filteredArgs[hIdx + 1]) {
+    candidates.push(...filteredArgs[hIdx + 1].split(","));
+    filteredArgs.splice(hIdx, 2);
+  }
+
+  // Check positional args after subcommand (e.g. mesh --init agy claude or mesh hooks doctor pi)
+  for (const arg of filteredArgs) {
+    if (!arg.startsWith("-")) {
+      candidates.push(...arg.split(","));
+    }
+  }
+
+  const normalized = candidates
+    .map((c) => normalizeHarnessName(c))
+    .filter((c) => SUPPORTED_HARNESSES.includes(c));
+
+  return {
+    harnesses: Array.from(new Set(normalized)),
+    isProject,
+    isGlobal,
+  };
+}
 
 // C4: when invoked from inside an agent turn, inherit identity and hop budget
 const meshAgent = process.env.MESH_AGENT || "human-cli";
@@ -37,37 +92,36 @@ async function main() {
     case "init":
     case "setup":
     case "install": {
-      const isProject = args.includes("--project");
-      const isGlobal = !isProject;
+      const { harnesses, isProject, isGlobal } = parseHarnessSelection(cmd, args);
       const scope = isGlobal ? "global" : "project";
 
       console.log(`\n==================================================`);
       console.log(`   AGENT MESH INITIALIZATION & REQUIREMENT SETUP  `);
       console.log(`==================================================\n`);
 
-      const claudeScript = resolve(import.meta.dirname, "../src/hooks/presence-hook.mjs");
-      const agyScript = resolve(import.meta.dirname, "../src/hooks/agy-presence-hook.mjs");
-      const { claudePath, agyPath } = resolveHookTargets({ global: isGlobal }, rootDir);
-
-      // 1. Install Claude Code hooks
-      const cRes = installClaudeHooks(claudePath, claudeScript);
-      if (cRes.ok) {
-        console.log(`[Claude Code] Lifecycle presence hooks registered -> ${claudePath}`);
-        if (existsSync(`${claudePath}.bak`)) console.log(`  (Backup created: ${claudePath}.bak)`);
+      let targets = harnesses;
+      if (targets.length === 0) {
+        targets = autoDiscoverHarnesses({ global: isGlobal }, rootDir);
+        console.log(`[Auto-Discovery] Detected harnesses with skill: ${targets.join(", ") || "none"}`);
       } else {
-        console.error(`[Claude Code] Failed to install hooks: ${cRes.error}`);
+        console.log(`[Targeted Harnesses] Configuring: ${targets.join(", ")}`);
       }
 
-      // 2. Install Antigravity hooks
-      const aRes = installAgyHooks(agyPath, agyScript);
-      if (aRes.ok) {
-        console.log(`[Antigravity] 'agent-mesh-presence' block registered -> ${agyPath}`);
-        if (existsSync(`${agyPath}.bak`)) console.log(`  (Backup created: ${agyPath}.bak)`);
-      } else {
-        console.error(`[Antigravity] Failed to install hooks: ${aRes.error}`);
+      if (targets.length === 0) {
+        console.log(`(No active harnesses detected. Specify harness name after param, e.g. 'mesh --init claude,agy')`);
       }
 
-      // 3. Ensure broker daemon is running with latest code
+      for (const h of targets) {
+        const res = installHarness(h, { global: isGlobal }, rootDir);
+        if (res.ok) {
+          console.log(`[${res.harness.toUpperCase()}:${scope}] Presence hooks registered -> ${res.targetPath}`);
+          if (existsSync(`${res.targetPath}.bak`)) console.log(`  (Backup created: ${res.targetPath}.bak)`);
+        } else {
+          console.error(`[${h.toUpperCase()}:${scope}] Failed to install hooks: ${res.error}`);
+        }
+      }
+
+      // Ensure broker daemon is running with latest code
       try {
         console.log(`\n[Broker Daemon] Verifying background daemon...`);
         const broker = await ensureBroker({ rootDir, address: ipcAddress });
@@ -78,30 +132,34 @@ async function main() {
       }
 
       console.log(`\nAgent Mesh is fully initialized (${scope.toUpperCase()} scope)!`);
-      console.log(`Interactive terminals in Claude Code and Antigravity will now automatically self-announce.`);
+      console.log(`Interactive terminals in ${targets.join(", ") || "supported harnesses"} will now automatically self-announce.`);
       console.log(`Run 'mesh status' anytime to inspect live sessions.\n`);
       break;
     }
 
     case "--uninstall":
     case "uninstall": {
-      const isProject = args.includes("--project");
-      const isGlobal = args.includes("--global");
+      const { harnesses, isProject } = parseHarnessSelection(cmd, args);
+      const isExplicitGlobal = args.includes("--global");
       const scopes = [];
       if (isProject) scopes.push(false);
-      else if (isGlobal) scopes.push(true);
+      else if (isExplicitGlobal) scopes.push(true);
       else scopes.push(true, false);
 
       console.log(`\n--- UNINSTALLING AGENT MESH REQUIREMENTS ---`);
       for (const globalScope of scopes) {
-        const { claudePath, agyPath, scope } = resolveHookTargets({ global: globalScope }, rootDir);
-        const cRes = uninstallClaudeHooks(claudePath);
-        if (cRes.ok && cRes.modified) {
-          console.log(`[Claude Code:${scope}] Removed agent-mesh hooks from ${claudePath}`);
+        const scope = globalScope ? "global" : "project";
+        let targets = harnesses;
+        if (targets.length === 0) {
+          targets = autoDiscoverHarnesses({ global: globalScope }, rootDir);
+          if (targets.length === 0) targets = [...SUPPORTED_HARNESSES];
         }
-        const aRes = uninstallAgyHooks(agyPath);
-        if (aRes.ok && aRes.modified) {
-          console.log(`[Antigravity:${scope}] Removed 'agent-mesh-presence' block from ${agyPath}`);
+
+        for (const h of targets) {
+          const res = uninstallHarness(h, { global: globalScope }, rootDir);
+          if (res.ok && res.modified) {
+            console.log(`[${res.harness.toUpperCase()}:${scope}] Removed agent-mesh hooks from ${res.targetPath}`);
+          }
         }
       }
 
@@ -456,82 +514,45 @@ async function main() {
 
     case "hooks": {
       const sub = args[0] || "install";
-      const isGlobal = args.includes("--global");
-      const harnessIdx = args.indexOf("--harness");
-      const harness = harnessIdx !== -1 && args[harnessIdx + 1] ? args[harnessIdx + 1].toLowerCase() : "all";
+      const remainingArgs = args.slice(1);
+      const { harnesses, isProject, isGlobal } = parseHarnessSelection(sub, remainingArgs);
+      const scope = isGlobal ? "global" : "project";
 
-      const claudeScript = resolve(import.meta.dirname, "../src/hooks/presence-hook.mjs");
-      const agyScript = resolve(import.meta.dirname, "../src/hooks/agy-presence-hook.mjs");
-      const { claudePath, agyPath, scope } = resolveHookTargets({ global: isGlobal }, rootDir);
+      let targets = harnesses;
+      if (targets.length === 0) {
+        targets = autoDiscoverHarnesses({ global: isGlobal }, rootDir);
+        if (targets.length === 0) targets = [...SUPPORTED_HARNESSES];
+      }
 
       if (sub === "install") {
         console.log(`\n--- INSTALLING AGENT MESH LIFECYCLE HOOKS (${scope.toUpperCase()}) ---`);
-        if (harness === "all" || harness === "claude") {
-          const cRes = installClaudeHooks(claudePath, claudeScript);
-          if (cRes.ok) {
-            console.log(`[claude:${scope}] Registered presence hook (4 events) -> ${claudePath}`);
-            if (existsSync(`${claudePath}.bak`)) console.log(`  (Backup created: ${claudePath}.bak)`);
+        for (const h of targets) {
+          const res = installHarness(h, { global: isGlobal }, rootDir);
+          if (res.ok) {
+            console.log(`[${res.harness}:${scope}] Registered presence hooks -> ${res.targetPath}`);
+            if (existsSync(`${res.targetPath}.bak`)) console.log(`  (Backup created: ${res.targetPath}.bak)`);
           } else {
-            console.error(`[claude:${scope}] Failed to install hooks: ${cRes.error}`);
+            console.error(`[${h}:${scope}] Failed to install hooks: ${res.error}`);
           }
         }
-        if (harness === "all" || harness === "agy" || harness === "antigravity") {
-          const aRes = installAgyHooks(agyPath, agyScript);
-          if (aRes.ok) {
-            console.log(`[antigravity:${scope}] Registered 'agent-mesh-presence' block -> ${agyPath}`);
-            if (existsSync(`${agyPath}.bak`)) console.log(`  (Backup created: ${agyPath}.bak)`);
-          } else {
-            console.error(`[antigravity:${scope}] Failed to install hooks: ${aRes.error}`);
-          }
-        }
-        console.log(`\nHooks successfully installed. Interactive sessions will now self-announce to agent-mesh.`);
+        console.log(`\nHooks successfully installed. Interactive sessions will now self-announce to agent-mesh.\n`);
       } else if (sub === "uninstall") {
         console.log(`\n--- UNINSTALLING AGENT MESH LIFECYCLE HOOKS (${scope.toUpperCase()}) ---`);
-        if (harness === "all" || harness === "claude") {
-          const cRes = uninstallClaudeHooks(claudePath);
-          if (cRes.ok && cRes.modified) {
-            console.log(`[claude:${scope}] Removed agent-mesh hooks from ${claudePath}`);
+        for (const h of targets) {
+          const res = uninstallHarness(h, { global: isGlobal }, rootDir);
+          if (res.ok && res.modified) {
+            console.log(`[${res.harness}:${scope}] Removed agent-mesh hooks from ${res.targetPath}`);
           } else {
-            console.log(`[claude:${scope}] No agent-mesh hooks found in ${claudePath}`);
+            console.log(`[${res.harness}:${scope}] No agent-mesh hooks found in ${res.targetPath}`);
           }
         }
-        if (harness === "all" || harness === "agy" || harness === "antigravity") {
-          const aRes = uninstallAgyHooks(agyPath);
-          if (aRes.ok && aRes.modified) {
-            console.log(`[antigravity:${scope}] Removed 'agent-mesh-presence' block from ${agyPath}`);
-          } else {
-            console.log(`[antigravity:${scope}] No agent-mesh hooks found in ${agyPath}`);
-          }
-        }
-        console.log(`\nUninstall complete.`);
+        console.log(`\nUninstall complete.\n`);
       } else if (sub === "doctor") {
         console.log(`\n--- AGENT MESH HOOKS DIAGNOSTICS (${scope.toUpperCase()}) ---`);
-        console.log(`Claude Code settings: ${claudePath}`);
-        if (existsSync(claudePath)) {
-          try {
-            const cData = JSON.parse(readFileSync(claudePath, "utf8"));
-            const hasClaude = Object.values(cData.hooks || {}).some((groups) =>
-              groups.some((g) => (g.hooks || []).some((h) => /presence-hook\.mjs/.test(h.command || "")))
-            );
-            console.log(`  Status: ${hasClaude ? "Installed (ACTIVE)" : "Not installed"}`);
-          } catch {
-            console.log(`  Status: Error reading JSON`);
-          }
-        } else {
-          console.log(`  Status: File does not exist`);
-        }
-
-        console.log(`Antigravity hooks: ${agyPath}`);
-        if (existsSync(agyPath)) {
-          try {
-            const aData = JSON.parse(readFileSync(agyPath, "utf8"));
-            const hasAgy = Boolean(aData["agent-mesh-presence"]);
-            console.log(`  Status: ${hasAgy ? "Installed (ACTIVE)" : "Not installed"}`);
-          } catch {
-            console.log(`  Status: Error reading JSON`);
-          }
-        } else {
-          console.log(`  Status: File does not exist`);
+        for (const h of targets) {
+          const diag = diagnoseHarness(h, { global: isGlobal }, rootDir);
+          console.log(`${diag.harness.toUpperCase()} [${diag.targetPath}]:`);
+          console.log(`  Status: ${diag.status}`);
         }
         console.log("");
       }
@@ -542,20 +563,20 @@ async function main() {
       console.log(`
 Agent Mesh CLI (v1.1.0)
 Commands:
-  --init, --install   Install all requirements, configure lifecycle hooks, and start broker
-  --uninstall         Cleanly remove hooks and stop the broker daemon
-  start               Start the local mesh broker daemon in the background
-  stop                Stop the running broker daemon
-  status              Display current agent sessions, busy status, and queue depth
-  hooks install       Install lifecycle hooks into Claude Code settings and Antigravity
-  hooks uninstall     Remove agent-mesh hooks cleanly
-  hooks doctor        Inspect configuration and verify hook registration
-  ask --to <agent>    Enqueue a non-blocking question for an agent (returns ticket)
-  send --to <agent>   Send a one-way notification message
-  reply --ticket <id> --to <agent>  Reply to a previous question ticket
-  inbox <agent>       Inspect pending (or --delivered) messages for an agent
-  watch <agent>       Live tail an agent's event stream
-  attach <agent>      Acquire session lease and launch native interactive harness
+  --init, --install [harnesses...]   Install requirements, configure hooks, and start broker (auto-discovers or assigns harnesses)
+  --uninstall [harnesses...]         Cleanly remove hooks and stop the broker daemon
+  start                              Start the local mesh broker daemon in the background
+  stop                               Stop the running broker daemon
+  status                             Display current agent sessions, busy status, and queue depth
+  hooks install [harnesses...]       Install lifecycle hooks for specified (or detected) harnesses
+  hooks uninstall [harnesses...]     Remove agent-mesh hooks cleanly
+  hooks doctor [harnesses...]        Inspect configuration and verify hook registration across harnesses
+  ask --to <agent>                   Enqueue a non-blocking question for an agent (returns ticket)
+  send --to <agent>                  Send a one-way notification message
+  reply --ticket <id> --to <agent>   Reply to a previous question ticket
+  inbox <agent>                      Inspect pending (or --delivered) messages for an agent
+  watch <agent>                      Live tail an agent's event stream
+  attach <agent>                     Acquire session lease and launch native interactive harness
       `);
       break;
   }

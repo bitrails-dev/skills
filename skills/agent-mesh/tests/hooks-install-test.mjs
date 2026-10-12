@@ -14,6 +14,16 @@ import {
   uninstallClaudeHooks,
   installAgyHooks,
   uninstallAgyHooks,
+  installCodexHooks,
+  uninstallCodexHooks,
+  installOpenCodePlugin,
+  uninstallOpenCodePlugin,
+  installPiExtension,
+  uninstallPiExtension,
+  installHarness,
+  uninstallHarness,
+  diagnoseHarness,
+  autoDiscoverHarnesses,
 } from "../src/hooks/installer.mjs";
 
 test("Lifecycle Hook Installer & Uninstaller Suite", async (t) => {
@@ -243,6 +253,147 @@ test("Lifecycle Hook Installer & Uninstaller Suite", async (t) => {
       assert.equal(claudeData.hooks?.SessionStart, undefined);
       const agyData = JSON.parse(readFileSync(agyPath, "utf8"));
       assert.equal(agyData["agent-mesh-presence"], undefined);
+    } finally {
+      spawnSync(process.execPath, [cliScript, "stop"], { cwd: tmpDir });
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("9. Codex hook install/uninstall handles --harness codex and preserves foreign hooks", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "mesh-codex-test-"));
+    const hooksPath = join(tmpDir, "hooks.json");
+    const scriptPath = "D:\\mesh\\presence-hook.mjs";
+
+    try {
+      // Create initial hooks with foreign hook
+      const initial = {
+        hooks: {
+          SessionStart: [{ hooks: [{ type: "command", command: "echo foreign-codex" }] }],
+        },
+      };
+      writeFileSync(hooksPath, JSON.stringify(initial, null, 2));
+
+      // Install
+      const res = installCodexHooks(hooksPath, scriptPath);
+      assert.equal(res.ok, true);
+      assert.equal(res.modified, true);
+
+      const installed = JSON.parse(readFileSync(hooksPath, "utf8"));
+      assert.equal(installed.hooks.SessionStart.length, 2);
+      const codexHook = installed.hooks.SessionStart[1].hooks[0].command;
+      assert.ok(codexHook.includes("--harness codex"));
+      assert.ok(codexHook.includes("presence-hook.mjs"));
+
+      // Uninstall
+      const unRes = uninstallCodexHooks(hooksPath);
+      assert.equal(unRes.ok, true);
+      assert.equal(unRes.modified, true);
+
+      const uninstalled = JSON.parse(readFileSync(hooksPath, "utf8"));
+      assert.equal(uninstalled.hooks.SessionStart.length, 1);
+      assert.equal(uninstalled.hooks.SessionStart[0].hooks[0].command, "echo foreign-codex");
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("10. OpenCode plugin install registers in opencode.json and creates plugin loader", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "mesh-opencode-test-"));
+    const configPath = join(tmpDir, "opencode.json");
+    const pluginLoader = join(tmpDir, "plugins", "agent-mesh-presence.js");
+    const scriptPath = join(tmpDir, "opencode-presence-plugin.mjs");
+    writeFileSync(scriptPath, "export default function() {}");
+
+    try {
+      // 1. Install
+      const res = installOpenCodePlugin(configPath, pluginLoader, scriptPath);
+      assert.equal(res.ok, true);
+      assert.equal(res.modified, true);
+      assert.equal(existsSync(pluginLoader), true);
+
+      const configData = JSON.parse(readFileSync(configPath, "utf8"));
+      assert.ok(Array.isArray(configData.plugin));
+      assert.equal(configData.plugin.length, 1);
+      assert.ok(configData.plugin[0].includes("agent-mesh-presence.js"));
+
+      // 2. Uninstall
+      const unRes = uninstallOpenCodePlugin(configPath, pluginLoader);
+      assert.equal(unRes.ok, true);
+      assert.equal(unRes.modified, true);
+      assert.equal(existsSync(pluginLoader), false);
+
+      const unData = JSON.parse(readFileSync(configPath, "utf8"));
+      assert.equal(unData.plugin.length, 0);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("11. Pi extension install creates loader in extensions/ and removes cleanly", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "mesh-pi-test-"));
+    const loaderPath = join(tmpDir, "extensions", "agent-mesh-presence.js");
+    const scriptPath = join(tmpDir, "pi-presence-extension.mjs");
+    writeFileSync(scriptPath, "export default function() {}");
+
+    try {
+      // Install
+      const res = installPiExtension(loaderPath, scriptPath);
+      assert.equal(res.ok, true);
+      assert.equal(existsSync(loaderPath), true);
+      const content = readFileSync(loaderPath, "utf8");
+      assert.ok(content.includes("pi-presence-extension.mjs"));
+
+      // Uninstall
+      const unRes = uninstallPiExtension(loaderPath);
+      assert.equal(unRes.ok, true);
+      assert.equal(existsSync(loaderPath), false);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("12. autoDiscoverHarnesses returns detected system harnesses", () => {
+    const detected = autoDiscoverHarnesses({ global: true });
+    assert.ok(Array.isArray(detected));
+    assert.ok(detected.length > 0, "Should detect at least 1 harness on current machine");
+    assert.ok(detected.includes("claude") || detected.includes("agy"));
+  });
+
+  await t.test("13. CLI targeted --init codex,pi and --uninstall codex,pi work end-to-end", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "mesh-cli-targeted-"));
+    const cliScript = join(import.meta.dirname, "../scripts/mesh.mjs");
+
+    try {
+      // 1. Run --init codex,pi --project
+      const initProc = spawnSync(process.execPath, [cliScript, "--init", "codex,pi", "--project"], {
+        cwd: tmpDir,
+        encoding: "utf8",
+      });
+      assert.equal(initProc.status, 0);
+      assert.ok(initProc.stdout.includes("Targeted Harnesses"));
+      assert.ok(initProc.stdout.includes("codex, pi"));
+
+      // Verify files
+      const codexPath = join(tmpDir, ".codex", "hooks.json");
+      const piPath = join(tmpDir, ".pi", "extensions", "agent-mesh-presence.js");
+      assert.equal(existsSync(codexPath), true);
+      assert.equal(existsSync(piPath), true);
+
+      // Verify claude was NOT touched because it was not in target list
+      const claudePath = join(tmpDir, ".claude", "settings.json");
+      assert.equal(existsSync(claudePath), false);
+
+      // 2. Run --uninstall codex,pi --project
+      const unProc = spawnSync(process.execPath, [cliScript, "--uninstall", "codex,pi", "--project"], {
+        cwd: tmpDir,
+        encoding: "utf8",
+      });
+      assert.equal(unProc.status, 0);
+
+      // Verify uninstalled
+      const codexData = JSON.parse(readFileSync(codexPath, "utf8"));
+      assert.equal(codexData.hooks?.SessionStart, undefined);
+      assert.equal(existsSync(piPath), false);
     } finally {
       spawnSync(process.execPath, [cliScript, "stop"], { cwd: tmpDir });
       rmSync(tmpDir, { recursive: true, force: true });

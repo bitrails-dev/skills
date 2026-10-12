@@ -6,17 +6,19 @@
 /**
  * Regex matching any agent-mesh hook script invocation (including legacy names).
  */
-export const MESH_HOOK_MATCHER = /(?:agy-)?presence-hook\.mjs|stop-hook\.mjs/;
+export const MESH_HOOK_MATCHER = /(?:agy-)?presence-hook\.mjs|stop-hook\.mjs|opencode-presence-plugin|pi-presence-extension|agent-mesh-presence/;
 
 /**
  * Builds a cross-platform executable hook command with forward slashes.
  * Forward slashes survive cmd.exe, PowerShell, and bash without escaping errors.
  * @param {string} scriptAbsPath - Absolute path to target hook script.
+ * @param {string[]} [extraArgs=[]] - Additional CLI arguments (e.g. ['--harness', 'codex']).
  * @returns {string} Formatted shell command.
  */
-export function buildHookCommand(scriptAbsPath) {
+export function buildHookCommand(scriptAbsPath, extraArgs = []) {
   const normalized = scriptAbsPath.replace(/\\/g, "/");
-  return `node "${normalized}"`;
+  const argsStr = extraArgs.length > 0 ? " " + extraArgs.join(" ") : "";
+  return `node "${normalized}"${argsStr}`;
 }
 
 /**

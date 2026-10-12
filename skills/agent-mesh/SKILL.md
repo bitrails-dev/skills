@@ -30,31 +30,41 @@ Instead of rigid 1-to-1 RPC relays, agents interact via an atomic local Broker d
 ## Quick Start CLI
 
 ```powershell
-# 1. One-step initialization: registers hooks globally and starts broker daemon
+# 1. One-step initialization: auto-discovers all harnesses with skill installed and starts broker
 node scripts/mesh.mjs --init
+
+# Alternatively: assign specific harness names
+node scripts/mesh.mjs --init agy,claude
+node scripts/mesh.mjs --init opencode,pi,codex
+node scripts/mesh.mjs --init --project codex,pi   # project-local scope
 
 # 2. Check mesh status and active agent sessions
 node scripts/mesh.mjs status
 
-# 3. Send a non-blocking question to an agent (or a specific live session)
+# 3. Diagnose hook and plugin installation across all harnesses (or targeted ones)
+node scripts/mesh.mjs hooks doctor
+node scripts/mesh.mjs hooks doctor claude,agy
+
+# 4. Send a non-blocking question to an agent (or a specific live session)
 node scripts/mesh.mjs ask --to claude "Can you analyze the memory usage in src/broker.mjs?"
 node scripts/mesh.mjs ask --to claude@<session-uuid> "Targeted instruction for specific terminal"
 
-# 4. Announce an interactive session (or let hooks handle it)
+# 5. Announce an interactive session (or let hooks handle it)
 node scripts/mesh.mjs announce --harness claude --session <uuid> --pid <pid>
 
-# 5. Inspect an agent's (or the human's) mailbox
+# 6. Inspect an agent's (or the human's) mailbox
 node scripts/mesh.mjs inbox claude
 node scripts/mesh.mjs inbox human-cli --delivered
 
-# 6. View an agent's live event stream
+# 7. View an agent's live event stream
 node scripts/mesh.mjs watch claude
 
-# 7. Interactively attach to an agent session (acquires lease)
+# 8. Interactively attach to an agent session (acquires lease)
 node scripts/mesh.mjs attach opencode
 
-# 8. Cleanly remove hooks and stop daemon
+# 9. Cleanly remove hooks and stop daemon (auto-discovers or targeted)
 node scripts/mesh.mjs --uninstall
+node scripts/mesh.mjs --uninstall pi,opencode
 ```
 
 ## Agent Identity, Session Discovery & Routing

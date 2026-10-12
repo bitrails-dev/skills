@@ -36,13 +36,18 @@ async function main() {
     process.exit(0);
   }
 
+  const harnessArgIdx = process.argv.indexOf("--harness");
+  const harness = harnessArgIdx !== -1 && process.argv[harnessArgIdx + 1]
+    ? process.argv[harnessArgIdx + 1]
+    : "claude";
+
   switch (eventName) {
     case "SessionStart": {
       // Announce live session to broker with authentic UUID
       await sendIpcRequest(address, {
         action: "session_event",
         payload: {
-          harness: "claude",
+          harness,
           sessionId,
           event: "start",
           pid,
@@ -59,7 +64,7 @@ async function main() {
       await sendIpcRequest(address, {
         action: "session_event",
         payload: {
-          harness: "claude",
+          harness,
           sessionId,
           event: "busy",
           pid,
@@ -79,7 +84,7 @@ async function main() {
       try {
         const res = await sendIpcRequest(address, {
           action: "claim_inbox",
-          payload: { agent: "claude", sessionId },
+          payload: { agent: harness, sessionId },
         }, 1);
 
         if (res.ok && res.messages && res.messages.length > 0) {
@@ -102,7 +107,7 @@ async function main() {
           // Announce idle
           await sendIpcRequest(address, {
             action: "session_event",
-            payload: { harness: "claude", sessionId, event: "idle", pid },
+            payload: { harness, sessionId, event: "idle", pid },
           }, 0).catch(() => {});
           process.exit(0);
         }
@@ -115,7 +120,7 @@ async function main() {
     case "SessionEnd": {
       await sendIpcRequest(address, {
         action: "session_event",
-        payload: { harness: "claude", sessionId, event: "end", pid },
+        payload: { harness, sessionId, event: "end", pid },
       }, 0).catch(() => {});
       process.exit(0);
       break;
