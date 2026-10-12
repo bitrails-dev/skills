@@ -63,6 +63,7 @@ The `agent-mesh` skill provides a **universal, elastic, multi-agent communicatio
 ### ADR-006: ACP (Agent Client Protocol) as Universal Elastic Foundation
 - **Context**: Supporting dozens of future coding agents requires avoiding writing custom scrapers for every new tool.
 - **Decision**: Implement a generic `AcpDriver` that implements the open Agent Client Protocol (JSON-RPC over stdio). Any tool implementing ACP (or an ACP adapter) works out of the box with zero custom code.
+- **Status**: **Experimental.** The JSON-RPC method names used by `AcpDriver` (and the OpenCode server endpoint, Codex `--json` event shapes) are unverified against installed CLI versions and pending upstream standard stabilization. Treat these drivers as best-effort until validated; the Claude, Pi, and declarative `resumeDriver` paths are the stable core.
 
 ---
 

@@ -9,6 +9,31 @@ import { spawn, execFileSync } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 
 /**
+ * True when a bare command name on Windows needs cmd.exe to resolve npm .cmd/.bat shims.
+ * Absolute paths and .exe binaries spawn directly.
+ * @param {string} bin
+ */
+export function needsShellFallback(bin) {
+  return process.platform === "win32" && !/[\\/]/.test(bin) && !/\.(exe|com)$/i.test(bin);
+}
+
+/**
+ * Spawns a child process portably. Bare npm-installed commands (codex, pi, opencode, agy)
+ * exist only as .cmd shims on Windows, which CreateProcess cannot execute directly.
+ * ponytail: shell:true quoting is safe here because argv holds flags and ids only —
+ * prompts travel over stdin, never argv.
+ * @param {string} bin
+ * @param {string[]} argv
+ * @param {object} [opts]
+ */
+export function spawnChild(bin, argv, opts = {}) {
+  if (needsShellFallback(bin)) {
+    return spawn(bin, argv, { ...opts, shell: true });
+  }
+  return spawn(bin, argv, opts);
+}
+
+/**
  * Gracefully or forcibly terminates an entire process tree.
  * @param {import("node:child_process").ChildProcess} child
  */
@@ -67,7 +92,11 @@ export function createResumeDriver(config) {
 
     async probe() {
       try {
-        execFileSync(config.bin, ["--version"], { stdio: "ignore", timeout: 5000 });
+        execFileSync(config.bin, ["--version"], {
+          stdio: "ignore",
+          timeout: 5000,
+          shell: needsShellFallback(config.bin),
+        });
         return { ok: true };
       } catch (err) {
         return { ok: false, reason: err.message };
@@ -85,11 +114,17 @@ export function createResumeDriver(config) {
       };
     },
 
-    async *turn(session, prompt, signal) {
+    /**
+     * @param {object} session
+     * @param {string} prompt
+     * @param {AbortSignal} [signal]
+     * @param {{env?: Record<string, string>}} [opts] - Extra env (MESH_AGENT, MESH_HOPS, ...).
+     */
+    async *turn(session, prompt, signal, opts = {}) {
       const argv = config.getArgv(session, prompt);
-      const env = { ...process.env, ...(config.defaultEnv || {}) };
+      const env = { ...process.env, ...(config.defaultEnv || {}), ...(opts.env || {}) };
 
-      const child = spawn(config.bin, argv, {
+      const child = spawnChild(config.bin, argv, {
         cwd: session.cwd,
         env,
         stdio: ["pipe", "pipe", "pipe"],
@@ -101,9 +136,15 @@ export function createResumeDriver(config) {
       child.stdin.on("error", () => {});
       child.stdin.end(prompt);
 
-      // Drain stderr to prevent 64 KB OS pipe buffer deadlock (H4)
-      child.stderr.on("data", () => {});
+      // Drain stderr to prevent 64 KB OS pipe buffer deadlock (H4);
+      // keep a tail for diagnostics so failures are not silent (H2)
+      const stderrTail = [];
+      child.stderr.on("data", (chunk) => {
+        stderrTail.push(chunk.toString("utf8"));
+        if (stderrTail.length > 20) stderrTail.shift();
+      });
       child.stderr.on("error", () => {});
+      const stderrSnippet = () => stderrTail.join("").slice(-2000).trim();
 
       let idleTimer = null;
       let totalTimer = null;
@@ -166,11 +207,11 @@ export function createResumeDriver(config) {
         if (totalTimer) clearTimeout(totalTimer);
 
         if (idleTimedOut) {
-          eventsQueue.push({ t: "error", message: `Turn aborted: idle timeout (${config.idleTimeoutMs || 90000}ms of silence)`, retryable: false });
+          eventsQueue.push({ t: "error", message: `Turn aborted: idle timeout (${config.idleTimeoutMs || 90000}ms of silence)`, stderr: stderrSnippet(), retryable: true });
         } else if (timedOut) {
-          eventsQueue.push({ t: "error", message: `Turn aborted: total timeout (${config.totalTimeoutMs || 600000}ms elapsed)`, retryable: false });
+          eventsQueue.push({ t: "error", message: `Turn aborted: total timeout (${config.totalTimeoutMs || 600000}ms elapsed)`, stderr: stderrSnippet(), retryable: true });
         } else if (code !== 0) {
-          eventsQueue.push({ t: "error", message: `Process exited with code ${code}`, retryable: false });
+          eventsQueue.push({ t: "error", message: `Process exited with code ${code}`, stderr: stderrSnippet(), retryable: false });
         } else {
           eventsQueue.push({ t: "done", session });
         }
@@ -183,7 +224,7 @@ export function createResumeDriver(config) {
       });
 
       child.on("error", (err) => {
-        eventsQueue.push({ t: "error", message: err.message, retryable: false });
+        eventsQueue.push({ t: "error", message: err.message, stderr: stderrSnippet(), retryable: err.code === "ENOENT" ? false : true });
         isDone = true;
         if (notify) {
           notify();

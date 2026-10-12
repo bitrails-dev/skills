@@ -7,15 +7,20 @@
  */
 
 import { spawn, execFileSync } from "node:child_process";
-import { existsSync, readFileSync, unlinkSync, watchFile, unwatchFile } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { getIpcAddress, sendIpcRequest, findRepoRoot } from "../src/ipc.mjs";
+import { getIpcAddress, sendIpcRequest, findRepoRoot, resolveIpcAddress } from "../src/ipc.mjs";
+import { spawnChild } from "../src/drivers/base.mjs";
+
+// C4: when invoked from inside an agent turn, inherit identity and hop budget
+const meshAgent = process.env.MESH_AGENT || "human-cli";
+const meshHops = Number(process.env.MESH_HOPS || 0);
 
 const cwd = process.cwd();
 const rootDir = findRepoRoot(cwd);
 const meshDir = join(rootDir, ".agent-mesh");
 const brokerPidPath = join(meshDir, "broker.json");
-const ipcAddress = getIpcAddress(rootDir);
+const ipcAddress = resolveIpcAddress(rootDir);
 
 function isProcessAlive(pid) {
   try {
@@ -165,10 +170,11 @@ async function main() {
         const res = await sendIpcRequest(ipcAddress, {
           action: cmd,
           payload: {
-            from: "human-cli",
+            from: meshAgent,
             to,
             body,
             kind: cmd === "ask" ? "ask" : "notify",
+            hops: meshHops,
           },
         });
 
@@ -214,7 +220,7 @@ async function main() {
           action: "reply",
           payload: {
             ticket,
-            from: "human-cli",
+            from: meshAgent,
             to,
             body,
           },
@@ -229,6 +235,45 @@ async function main() {
         }
       } catch (err) {
         console.error(`Failed to send reply: ${err.message}`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    case "inbox": {
+      const delivered = args.includes("--delivered");
+      const agent = args.find((a, i) => !a.startsWith("--") && args[i - 1] !== "--limit");
+      const limitIdx = args.indexOf("--limit");
+      const limit = limitIdx !== -1 && args[limitIdx + 1] ? Number(args[limitIdx + 1]) : 20;
+
+      if (!agent) {
+        console.error("Usage: mesh inbox <agent> [--delivered] [--limit N]");
+        process.exit(1);
+      }
+
+      try {
+        const res = await sendIpcRequest(ipcAddress, {
+          action: "inbox",
+          payload: { agent, delivered, limit },
+        });
+
+        if (!res.ok) {
+          console.error(`Error: ${res.error}`);
+          process.exit(1);
+        }
+
+        const label = delivered ? "delivered" : "pending";
+        if (res.messages.length === 0) {
+          console.log(`No ${label} messages for '${agent}'.`);
+        } else {
+          console.log(`\n--- INBOX [${agent}] (${label}, ${res.messages.length}) ---`);
+          for (const m of res.messages) {
+            const body = m.body.length > 160 ? `${m.body.slice(0, 160)}...` : m.body;
+            console.log(`  [${m.kind}] ${m.id}\n    from: ${m.from_agent} | hops: ${m.hops} | ${new Date(m.created_at).toISOString()}\n    ${body.replace(/\n/g, "\n    ")}\n`);
+          }
+        }
+      } catch (err) {
+        console.error(`Cannot connect to broker: ${err.message}`);
         process.exit(1);
       }
       break;
@@ -283,7 +328,7 @@ async function main() {
       try {
         const leaseRes = await sendIpcRequest(ipcAddress, {
           action: "lease_acquire",
-          payload: { agent },
+          payload: { agent, pid: process.pid },
         });
 
         if (!leaseRes.ok) {
@@ -298,7 +343,7 @@ async function main() {
         console.log(`Exit the attached CLI session to return the lease to the mesh broker.\n`);
 
         const [bin, ...cmdArgs] = leaseRes.attachArgv;
-        const child = spawn(bin, cmdArgs, {
+        const child = spawnChild(bin, cmdArgs, {
           cwd,
           stdio: "inherit",
           windowsHide: false,
@@ -332,6 +377,7 @@ Commands:
   ask --to <agent>    Enqueue a non-blocking question for an agent (returns ticket)
   send --to <agent>   Send a one-way notification message
   reply --ticket <id> --to <agent>  Reply to a previous question ticket
+  inbox <agent>       Inspect pending (or --delivered) messages for an agent
   watch <agent>       Live tail an agent's event stream
   attach <agent>      Acquire session lease and launch native interactive harness
       `);

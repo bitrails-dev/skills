@@ -5,9 +5,8 @@
  * to seamlessly participate in the mesh with zero custom wrapper code.
  */
 
-import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
-import { killProcessTree } from "./base.mjs";
+import { killProcessTree, spawnChild } from "./base.mjs";
 
 export function createAcpDriver(options = {}) {
   const binary = options.bin || "acp-agent";
@@ -35,13 +34,18 @@ export function createAcpDriver(options = {}) {
       };
     },
 
-    async *turn(session, prompt, signal) {
-      const child = spawn(binary, options.args || [], {
+    async *turn(session, prompt, signal, opts = {}) {
+      const child = spawnChild(binary, options.args || [], {
         cwd: session.cwd,
+        env: { ...process.env, ...(options.env || {}), ...(opts.env || {}) },
         stdio: ["pipe", "pipe", "pipe"],
         detached: process.platform !== "win32",
         windowsHide: true,
       });
+
+      // Drain stderr to avoid pipe-buffer deadlock (H4)
+      child.stderr.on("data", () => {});
+      child.stderr.on("error", () => {});
 
       const rpcInit = {
         jsonrpc: "2.0",

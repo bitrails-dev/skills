@@ -40,7 +40,7 @@ export function createOpenCodeDriver(options = {}) {
       };
     },
 
-    async *turn(session, prompt, signal) {
+    async *turn(session, prompt, signal, opts = {}) {
       // In server mode, attempts HTTP RPC to `opencode serve`.
       // Falls back to CLI execution if server endpoint is offline.
       let usedServer = false;
@@ -88,7 +88,7 @@ export function createOpenCodeDriver(options = {}) {
           },
         });
 
-        for await (const event of fallbackDriver.turn(session, prompt, signal)) {
+        for await (const event of fallbackDriver.turn(session, prompt, signal, opts)) {
           yield event;
         }
       }

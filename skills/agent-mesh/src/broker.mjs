@@ -37,6 +37,8 @@ export class AgentMeshBroker {
     this.drivers = new Map();
     this.busyAgents = new Set();
     this.activeTurns = new Map(); // agentId -> AbortController
+    this.turnRetries = new Map(); // agentId -> consecutive failed turns
+    this.messageRetries = new Map(); // ticketId -> retry attempts
     this.ipcServer = null;
     this.running = false;
 
@@ -163,6 +165,7 @@ export class AgentMeshBroker {
       }
 
       case "status": {
+        this.reapStaleLeases();
         const pending = this.repo.getPendingCounts();
         const activeSessions = [];
         for (const [harness] of this.drivers) {
@@ -181,8 +184,19 @@ export class AgentMeshBroker {
 
       case "inbox": {
         const targetAgent = this.resolveAgent(req.payload.agent);
-        const messages = this.repo.getPendingMessages(targetAgent);
+        const messages = req.payload.delivered
+          ? this.repo.getDeliveredMessages(targetAgent, req.payload.limit || 20)
+          : this.repo.getPendingMessages(targetAgent);
         return { ok: true, messages };
+      }
+
+      case "ack": {
+        // H5: consumers (stop hook) confirm delivery of previously claimed tickets
+        const ids = Array.isArray(req.payload.ids) ? req.payload.ids : [];
+        for (const id of ids) {
+          this.repo.markDelivered(id);
+        }
+        return { ok: true, acknowledged: ids.length };
       }
 
       case "claim_inbox": {
@@ -203,8 +217,11 @@ export class AgentMeshBroker {
         if (this.activeTurns.has(agent)) {
           this.activeTurns.get(agent).abort();
           this.busyAgents.delete(agent);
-          this.db.exec("UPDATE messages SET status = 'pending' WHERE to_agent = ? AND status = 'claimed';", [agent]);
+          this.repo.restorePendingForAgent(agent);
         }
+
+        // Track holder PID so stale leases can be reaped when the holder dies (H6)
+        const leaseHolder = req.payload.pid ? `human-cli@${req.payload.pid}` : "human-cli";
 
         let session = this.repo.getActiveSession(agent);
         if (!session) {
@@ -214,11 +231,11 @@ export class AgentMeshBroker {
             sessionId: opened.id,
             cwd: opened.cwd,
             state: "human-held",
-            leaseHolder: "human-cli",
+            leaseHolder,
           });
           session = { harness: agent, session_id: opened.id, cwd: opened.cwd };
         } else {
-          this.repo.updateSessionState(session.session_id, "human-held", "human-cli");
+          this.repo.updateSessionState(session.session_id, "human-held", leaseHolder);
         }
 
         const attachArgv = driver.attachArgv({ harness: agent, id: session.session_id, cwd: session.cwd });
@@ -253,10 +270,30 @@ export class AgentMeshBroker {
   }
 
   /**
+   * Releases human-held leases whose holder process is gone (H6).
+   * Holder is recorded as 'human-cli@<pid>'; leases without a PID are never reaped.
+   */
+  reapStaleLeases() {
+    for (const [harness] of this.drivers) {
+      const s = this.repo.getActiveSession(harness);
+      if (s?.state !== "human-held" || !s.lease_holder?.includes("@")) continue;
+      const pid = Number(s.lease_holder.split("@").pop());
+      if (!Number.isInteger(pid) || pid <= 0) continue;
+      try {
+        process.kill(pid, 0); // Throws if the holder is gone
+      } catch {
+        this.repo.updateSessionState(s.session_id, "idle", null);
+      }
+    }
+  }
+
+  /**
    * Core Single-Flight Actor dispatch loop.
    */
   async dispatchPending() {
     if (!this.running) return;
+
+    this.reapStaleLeases();
 
     for (const [agentId, driver] of this.drivers) {
       if (this.busyAgents.has(agentId)) continue;
@@ -269,12 +306,26 @@ export class AgentMeshBroker {
       const messages = this.repo.claimMessagesForAgent(agentId);
       if (!messages || messages.length === 0) continue;
 
-      // Execute single turn asynchronously
+      // Execute single turn asynchronously; never let a turn crash the broker (H1)
       this.busyAgents.add(agentId);
-      this.runAgentTurn(agentId, driver, messages).finally(() => {
-        this.busyAgents.delete(agentId);
-        this.scheduleDispatch(); // Re-check in case new messages arrived during turn
-      });
+      this.runAgentTurn(agentId, driver, messages)
+        .catch((err) => {
+          try {
+            this.repo.updateSessionStateIf(
+              this.repo.getActiveSession(agentId)?.session_id,
+              "error",
+              "busy"
+            );
+            for (const m of messages) {
+              this.repo.restorePending(m.id);
+            }
+          } catch {}
+          console.error(`[agent-mesh] dispatch error for ${agentId}:`, err?.message || err);
+        })
+        .finally(() => {
+          this.busyAgents.delete(agentId);
+          this.scheduleDispatch(); // Re-check in case new messages arrived during turn
+        });
     }
   }
 
@@ -286,14 +337,42 @@ export class AgentMeshBroker {
    */
   async runAgentTurn(agentId, driver, messages) {
     const logFile = join(this.logsDir, `${agentId}.jsonl`);
+    // H1: log writes must never crash the broker (EBUSY, AV locks, full disk)
     const log = (entry) => {
-      appendFileSync(logFile, `${JSON.stringify({ ...entry, timestamp: new Date().toISOString() })}\n`, "utf8");
+      try {
+        appendFileSync(logFile, `${JSON.stringify({ ...entry, timestamp: new Date().toISOString() })}\n`, "utf8");
+      } catch {}
     };
 
-    // ADR-005: Isolate writing agents in dedicated git worktrees
-    const agentCwd = ensureAgentWorktree(this.cwd, agentId);
+    // C2 race guard: a lease may have been acquired after dispatch claimed these messages
+    const preCheck = this.repo.getActiveSession(agentId);
+    if (preCheck?.state === "human-held") {
+      for (const m of messages) {
+        this.repo.restorePending(m.id);
+      }
+      log({ t: "turn_deferred", reason: "human-held lease", tickets: messages.map((m) => m.id) });
+      return;
+    }
 
-    // 1. Turn Coalescing
+    // ADR-005: Isolate writing agents in dedicated git worktrees
+    let agentCwd = this.cwd;
+    try {
+      agentCwd = ensureAgentWorktree(this.cwd, agentId);
+    } catch (err) {
+      log({ t: "worktree_fallback", error: err.message, cwd: agentCwd });
+    }
+
+    // C4: agents must know who they are and how to reply
+    const maxHops = Math.max(...messages.map((m) => m.hops || 0));
+    const meshCli = join(import.meta.dirname, "..", "scripts", "mesh.mjs");
+    const turnEnv = {
+      MESH_AGENT: agentId,
+      MESH_HOPS: String(maxHops),
+      MESH_CONVERSATION: messages[0].conversation_id || "conv-default",
+      MESH_IPC_ADDRESS: this.ipcAddress,
+    };
+
+    // 1. Turn Coalescing with identity + reply routing instructions
     const promptHeader = `[AGENT-MESH INBOX: ${messages.length} pending message(s)]\n`;
     const promptBody = messages
       .map(
@@ -301,9 +380,18 @@ export class AgentMeshBroker {
           `=== Message #${idx + 1} ===\nFrom: ${m.from_agent}\nKind: ${m.kind}\nTicket: ${m.id}\nPriority: ${m.priority}\n\n${m.body}\n`
       )
       .join("\n----------------------------------------\n\n");
-    const coalescedPrompt = `${promptHeader}\n${promptBody}\nInstructions: Process the above message(s) and take appropriate action. To reply to any request, state your response clearly.`;
+    const promptFooter = `
+--- AGENT MESH ROUTING ---
+You are agent '${agentId}' in the agent-mesh coordination network (repo: ${this.cwd}).
+Your env carries MESH_AGENT=${agentId}, MESH_HOPS=${maxHops} (max 5), MESH_CONVERSATION, MESH_IPC_ADDRESS.
+To reply to a message (asynchronous, fire-and-forget — send it, then finish your turn):
+  node ${meshCli} reply --ticket <ticket-id> --to <recipient> "<your response>"
+To start a new conversation with another agent:
+  node ${meshCli} ask --to <agent> "<message>"
+Process the message(s) above, take appropriate action, and reply via the CLI.`;
+    const coalescedPrompt = `${promptHeader}\n${promptBody}${promptFooter}`;
 
-    log({ t: "turn_start", count: messages.length, tickets: messages.map((m) => m.id), cwd: agentCwd });
+    log({ t: "turn_start", count: messages.length, tickets: messages.map((m) => m.id), cwd: agentCwd, hops: maxHops });
 
     // 2. Open or reuse session
     let session = this.repo.getActiveSession(agentId);
@@ -323,10 +411,32 @@ export class AgentMeshBroker {
     const abortController = new AbortController();
     this.activeTurns.set(agentId, abortController);
 
+    /**
+     * H2: failure policy — one retry per message batch, then dead-letter with diagnostics.
+     * Aborts (lease takeover) restore to pending without consuming the retry.
+     * @param {string} reason
+     */
+    const handleFailure = (reason, stderr) => {
+      this.repo.updateSessionStateIf(session.session_id, "error", "busy");
+      for (const m of messages) {
+        const attempts = (this.messageRetries.get(m.id) || 0) + 1;
+        this.messageRetries.set(m.id, attempts);
+        if (attempts <= 1) {
+          this.repo.restorePending(m.id);
+          log({ t: "turn_retry", attempt: attempts, reason, stderr: stderr || null, tickets: messages.map((m) => m.id) });
+        } else {
+          this.messageRetries.delete(m.id);
+          this.repo.markDead(m.id);
+          log({ t: "turn_failed", attempts, reason, stderr: stderr || null, tickets: messages.map((m) => m.id) });
+        }
+      }
+    };
+
     try {
       const sessionRef = { harness: agentId, id: session.session_id, cwd: session.cwd || agentCwd };
-      const eventStream = driver.turn(sessionRef, coalescedPrompt, abortController.signal);
+      const eventStream = driver.turn(sessionRef, coalescedPrompt, abortController.signal, { env: turnEnv });
 
+      let failed = null;
       for await (const event of eventStream) {
         log(event);
 
@@ -340,37 +450,37 @@ export class AgentMeshBroker {
           session.session_id = event.sessionId;
         }
 
-        if (event.t === "error") {
-          log({ t: "turn_error", error: event.message });
-          this.repo.updateSessionStateIf(session.session_id, "error", "busy");
+        if (event.t === "error" && !failed) {
+          failed = { reason: event.message, stderr: event.stderr };
         }
       }
 
-      // 3. Mark all claimed messages as delivered only if turn was not aborted
-      if (!abortController.signal.aborted) {
+      if (abortController.signal.aborted) {
+        // Aborted mid-turn (lease takeover): restore messages to pending
         for (const m of messages) {
+          this.repo.restorePending(m.id);
+        }
+      } else if (failed) {
+        handleFailure(failed.reason, failed.stderr);
+      } else {
+        for (const m of messages) {
+          this.messageRetries.delete(m.id);
           this.repo.markDelivered(m.id);
         }
-        this.repo.updateSessionStateIf(session.session_id, "idle", "busy");
-        log({ t: "turn_complete", tickets: messages.map((m) => m.id) });
-      } else {
-        // Aborted mid-turn: restore messages to pending
-        for (const m of messages) {
-          this.db.exec("UPDATE messages SET status = 'pending' WHERE id = ?;", [m.id]);
+        // Success may follow an error event; accept both 'busy' and 'error' origins
+        if (!this.repo.updateSessionStateIf(session.session_id, "idle", "busy")) {
+          this.repo.updateSessionStateIf(session.session_id, "idle", "error");
         }
+        log({ t: "turn_complete", tickets: messages.map((m) => m.id) });
       }
     } catch (err) {
       log({ t: "turn_crash", error: err.message });
       if (abortController.signal.aborted) {
         for (const m of messages) {
-          this.db.exec("UPDATE messages SET status = 'pending' WHERE id = ?;", [m.id]);
+          this.repo.restorePending(m.id);
         }
       } else {
-        this.repo.updateSessionStateIf(session.session_id, "error", "busy");
-        // On actual crash, mark claimed messages dead to avoid stranding
-        for (const m of messages) {
-          this.repo.markDead(m.id);
-        }
+        handleFailure(`driver crashed: ${err.message}`);
       }
     } finally {
       this.activeTurns.delete(agentId);

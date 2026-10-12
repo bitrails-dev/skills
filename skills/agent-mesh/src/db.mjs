@@ -111,6 +111,14 @@ export class MeshRepository {
       UPDATE messages SET status = 'dead' WHERE id = ?
     `);
 
+    this.stmtRestorePending = db.prepare(`
+      UPDATE messages SET status = 'pending' WHERE id = ?
+    `);
+
+    this.stmtRestorePendingForAgent = db.prepare(`
+      UPDATE messages SET status = 'pending' WHERE to_agent = ? AND status = 'claimed'
+    `);
+
     this.stmtUpsertSession = db.prepare(`
       INSERT INTO sessions (harness, session_id, cwd, state, lease_holder, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -139,6 +147,10 @@ export class MeshRepository {
 
     this.stmtGetPendingByAgent = db.prepare(`
       SELECT * FROM messages WHERE to_agent = ? AND status = 'pending' ORDER BY priority DESC, created_at ASC
+    `);
+
+    this.stmtGetDeliveredByAgent = db.prepare(`
+      SELECT * FROM messages WHERE to_agent = ? AND status = 'delivered' ORDER BY delivered_at DESC LIMIT ?
     `);
 
     this.stmtGetMessageById = db.prepare(`
@@ -192,6 +204,23 @@ export class MeshRepository {
    */
   markDead(messageId) {
     this.stmtMarkDead.run(messageId);
+  }
+
+  /**
+   * Restores a claimed/dead message to pending (retry or lease-takeover paths).
+   * @param {string} messageId
+   */
+  restorePending(messageId) {
+    this.stmtRestorePending.run(messageId);
+  }
+
+  /**
+   * Restores all claimed messages of an agent to pending.
+   * @param {string} agentId
+   * @returns {number} Restored row count.
+   */
+  restorePendingForAgent(agentId) {
+    return this.stmtRestorePendingForAgent.run(agentId).changes;
   }
 
   /**
@@ -259,6 +288,16 @@ export class MeshRepository {
    */
   getPendingMessages(agentId) {
     return this.stmtGetPendingByAgent.all(agentId);
+  }
+
+  /**
+   * Gets most recently delivered messages for an agent.
+   * @param {string} agentId
+   * @param {number} [limit=20]
+   * @returns {Array<object>}
+   */
+  getDeliveredMessages(agentId, limit = 20) {
+    return this.stmtGetDeliveredByAgent.all(agentId, limit);
   }
 
   /**

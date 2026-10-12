@@ -20,10 +20,10 @@ Instead of rigid 1-to-1 RPC relays, agents interact via an atomic local Broker d
 ## Supported Harnesses & Tiers
 - **Claude Code (`claude`)**: Continuous `stream-json` stdio or resume mode.
 - **Google Antigravity (`agy`)**: Headless print mode with project session resumption.
-- **OpenCode (`opencode`)**: Persistent server mode (`opencode serve`) with live web UI / attach.
+- **OpenCode (`opencode`)**: CLI run mode. *(Experimental: server mode endpoint not yet verified against `opencode serve`.)*
 - **Pi (`pi`)**: RPC stdio mode (`pi --mode rpc`) or session resumption.
-- **Codex (`codex`)**: App-server JSON-RPC.
-- **ACP Agents**: Any Agent Client Protocol-compliant agent via generic `AcpDriver`.
+- **Codex (`codex`)**: `codex exec --json`. *(Experimental: event names pending verification against installed CLI version.)*
+- **ACP Agents**: Any Agent Client Protocol-compliant agent via generic `AcpDriver`. *(Experimental: method names pending upstream ACP standard stabilization.)*
 - **Declarative CLIs**: Aider, custom LLM CLIs via 30-line `resumeDriver`.
 
 ## Quick Start CLI
@@ -38,12 +38,23 @@ node scripts/mesh.mjs status
 # 3. Send a non-blocking question to an agent
 node scripts/mesh.mjs ask --to claude "Can you analyze the memory usage in src/broker.mjs?"
 
-# 4. View an agent's live event stream
+# 4. Inspect an agent's (or the human's) mailbox
+node scripts/mesh.mjs inbox claude
+node scripts/mesh.mjs inbox human-cli --delivered
+
+# 5. View an agent's live event stream
 node scripts/mesh.mjs watch claude
 
-# 5. Interactively attach to an agent session (acquires lease)
+# 6. Interactively attach to an agent session (acquires lease)
 node scripts/mesh.mjs attach opencode
 ```
+
+## Agent Identity & Reply Routing
+Broker-driven agent turns run with `MESH_AGENT`, `MESH_HOPS`, and `MESH_CONVERSATION` set, and the
+coalesced prompt embeds the mesh CLI path plus reply instructions. Agents reply by invoking the
+CLI (`mesh reply --ticket <id> --to <peer> "..."`); the CLI inherits `MESH_AGENT`/`MESH_HOPS`
+from the environment, so hop budgets survive across `ask` chains, not just reply chains.
+Messages addressed to `human-cli` wait in the mailbox until read via `mesh inbox human-cli`.
 
 ## Architecture & Specifications
 See [SPEC.md](SPEC.md) for complete Architecture Decision Records (ADR 001–006), data models, and delivery contracts.

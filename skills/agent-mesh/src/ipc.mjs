@@ -7,7 +7,7 @@
 
 import { createServer, createConnection } from "node:net";
 import { createHash } from "node:crypto";
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync, unlinkSync, readFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -54,6 +54,25 @@ export function getIpcAddress(cwd) {
 }
 
 /**
+ * Resolves the active IPC address authoritative for this workspace.
+ * Prioritizes MESH_IPC_ADDRESS env var, then broker.json on disk, then deterministic hash.
+ * @param {string} [dir=process.cwd()]
+ * @returns {string} Authoritative pipe or socket address.
+ */
+export function resolveIpcAddress(dir = process.cwd()) {
+  if (process.env.MESH_IPC_ADDRESS) return process.env.MESH_IPC_ADDRESS;
+  const root = findRepoRoot(dir);
+  const brokerPidPath = join(root, ".agent-mesh", "broker.json");
+  if (existsSync(brokerPidPath)) {
+    try {
+      const data = JSON.parse(readFileSync(brokerPidPath, "utf8"));
+      if (data?.ipcAddress) return data.ipcAddress;
+    } catch {}
+  }
+  return getIpcAddress(root);
+}
+
+/**
  * Creates and starts an IPC server.
  * @param {string} address - Pipe or socket address.
  * @param {(req: object) => Promise<object>} requestHandler - Handler returning response payload.
@@ -91,15 +110,19 @@ export function startIpcServer(address, requestHandler) {
           try {
             const req = JSON.parse(line);
             const res = await requestHandler(req);
-            socket.write(`${JSON.stringify(res)}\n`);
+            socket.end(`${JSON.stringify(res)}\n`);
           } catch (err) {
-            socket.write(`${JSON.stringify({ ok: false, error: err.message })}\n`);
+            socket.end(`${JSON.stringify({ ok: false, error: err.message })}\n`);
           }
         }
       });
 
+      socket.on("end", () => {
+        socket.destroy();
+      });
+
       socket.on("error", () => {
-        // Suppress client-side abort errors on the server
+        socket.destroy();
       });
     });
 
