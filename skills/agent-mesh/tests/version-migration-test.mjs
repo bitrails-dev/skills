@@ -16,6 +16,9 @@ import { sendIpcRequest, startIpcServer, getIpcAddress } from "../src/ipc.mjs";
 import { ensureBroker, stopBroker, awaitPipeRelease } from "../src/daemon.mjs";
 import { initDatabase } from "../src/db.mjs";
 
+// Isolate test broker from user-global ~/.agent-mesh
+process.env.MESH_HOME = mkdtempSync(join(tmpdir(), "mesh-test-home-"));
+
 async function safeRmSync(dir) {
   for (let i = 0; i < 15; i++) {
     try {

@@ -97,7 +97,8 @@ export function resolveIpcAddress(dir = process.cwd()) {
   }
 
   // 2. User-global broker.json
-  const globalBrokerPath = join(homedir(), ".agent-mesh", "broker.json");
+  const meshHome = process.env.MESH_HOME || homedir();
+  const globalBrokerPath = join(meshHome, ".agent-mesh", "broker.json");
   if (existsSync(globalBrokerPath)) {
     try {
       const data = JSON.parse(readFileSync(globalBrokerPath, "utf8"));
@@ -105,8 +106,6 @@ export function resolveIpcAddress(dir = process.cwd()) {
         if (!data.pid || isPidAlive(data.pid)) {
           return data.ipcAddress;
         }
-        // Cleanup stale global file
-        try { unlinkSync(globalBrokerPath); } catch {}
       }
     } catch {}
   }

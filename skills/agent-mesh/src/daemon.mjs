@@ -190,6 +190,9 @@ export async function stopBroker(options = {}) {
     return { ok: true, message: "No running broker found." };
   }
 
+  // 1. Send graceful shutdown request via IPC
+  await sendIpcRequest(address, { action: "shutdown" }, 0).catch(() => {});
+
   // 2. Poll until process has completely terminated
   const startTime = Date.now();
   while (Date.now() - startTime < 6000) {

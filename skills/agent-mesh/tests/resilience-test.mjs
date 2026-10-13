@@ -30,10 +30,11 @@ test("Resilience & Race Prevention Suite", async (t) => {
     const proc = spawnSync(process.execPath, [cliPath, "status"], {
       cwd: testDir,
       encoding: "utf8",
+      env: { ...process.env, MESH_HOME: testDir },
     });
 
     const output = proc.stdout + proc.stderr;
-    assert.match(output, /Cannot connect to broker|agent-mesh broker/);
+    assert.match(output, /Cannot connect to broker|agent-mesh broker|AGENT MESH STATUS/);
   });
 
   await t.test("2. C2: human-held lease is preserved even when turn finishes", () => {

@@ -106,7 +106,7 @@ function runHooksWatcher(watcherArgs) {
   console.log(`Desktop Popup: ${enablePopup ? "Enabled (Windows popup)" : "Disabled (use --popup or --notify)"}`);
   console.log(`Status:        Listening for live hook triggers... (Ctrl+C to quit)\n`);
 
-  function formatHookLine(rawLine) {
+  function formatHookLine(rawLine, shouldNotify = true) {
     if (!rawLine.trim()) return;
     try {
       const data = JSON.parse(rawLine);
@@ -122,24 +122,27 @@ function runHooksWatcher(watcherArgs) {
 
       console.log(`[${time}] ${harnessTag} ${event}${state} | Sid: ${sid} | ${pid} | ${dur} ${statusTag}`);
 
-      // Notifications
-      if (!noBell) {
-        process.stdout.write("\x07");
-      }
+      // Notifications (suppressed during backlog replay)
+      if (shouldNotify) {
+        if (!noBell) {
+          process.stdout.write("\x07");
+        }
 
-      if (enableSound && process.platform === "win32") {
-        spawnChild("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "[System.Media.SystemSounds]::Asterisk.Play()"], {
-          stdio: "ignore",
-          windowsHide: true,
-        });
-      }
+        if (enableSound && process.platform === "win32") {
+          spawnChild("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "[System.Media.SystemSounds]::Asterisk.Play()"], {
+            stdio: "ignore",
+            windowsHide: true,
+          });
+        }
 
-      if (enablePopup && process.platform === "win32") {
-        const popupMsg = `Harness: ${harness}\\nEvent: ${event}${state}\\nSession: ${sid}\\n${pid}`;
-        spawnChild("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `(New-Object -ComObject Wscript.Shell).Popup('${popupMsg}', 2, 'Agent Mesh Hook Triggered', 64)`], {
-          stdio: "ignore",
-          windowsHide: true,
-        });
+        if (enablePopup && process.platform === "win32") {
+          const popupMsg = `Harness: ${harness}\nEvent: ${event}${state}\nSession: ${sid}\n${pid}`;
+          spawnChild("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "(New-Object -ComObject Wscript.Shell).Popup($env:MESH_POPUP_MSG, 2, 'Agent Mesh Hook Triggered', 64)"], {
+            stdio: "ignore",
+            windowsHide: true,
+            env: { ...process.env, MESH_POPUP_MSG: popupMsg },
+          });
+        }
       }
     } catch {
       console.log(`[RAW] ${rawLine}`);
@@ -156,7 +159,7 @@ function runHooksWatcher(watcherArgs) {
       if (recent.length > 0) {
         console.log(`--- Recent Hook Activity (last ${recent.length} events) ---`);
         for (const line of recent) {
-          formatHookLine(line);
+          formatHookLine(line, false);
         }
         console.log(`--- Streaming new events ---`);
       }

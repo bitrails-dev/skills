@@ -135,6 +135,10 @@ export function isProcessAlive(pid) {
   }
 }
 
+export function getMeshHome() {
+  return process.env.MESH_HOME || homedir();
+}
+
 /**
  * Resolves the authentic long-lived harness process ID for an interactive session.
  * On Windows, hook scripts are executed through intermediate wrapper shells (cmd.exe/pwsh.exe)
@@ -149,8 +153,9 @@ export function resolveTrueHarnessPid(sessionId) {
   const directPid = process.ppid || process.pid;
   if (!sessionId) return directPid;
 
-  const pidsDir = join(homedir(), ".agent-mesh", "pids");
-  const pidFile = join(pidsDir, `${sessionId}.pid`);
+  const cleanSessionId = String(sessionId).replace(/[^\w-]/g, "");
+  const pidsDir = join(getMeshHome(), ".agent-mesh", "pids");
+  const pidFile = join(pidsDir, `${cleanSessionId}.pid`);
 
   // 1. Check cache first (< 0.2ms)
   try {
@@ -164,39 +169,52 @@ export function resolveTrueHarnessPid(sessionId) {
 
   let resolvedPid = directPid;
 
-  // 2. Windows grandparent / ancestor resolution
+  // 2. Windows shell-skipping ancestor traversal
   if (process.platform === "win32") {
     try {
+      const script = `
+        $shells = @('cmd.exe', 'powershell.exe', 'pwsh.exe', 'bash.exe', 'sh.exe', 'conhost.exe');
+        $p = Get-CimInstance Win32_Process -Filter "ProcessId = ${directPid}";
+        while ($p -and $p.ParentProcessId) {
+          $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $($p.ParentProcessId)";
+          if (-not $parent) { break }
+          $p = $parent;
+          if ($p.Name.ToLower() -notin $shells) { break }
+        }
+        if ($p) { $p.ProcessId } else { ${directPid} }
+      `;
       const out = execFileSync(
         "powershell.exe",
-        [
-          "-NoProfile",
-          "-NonInteractive",
-          "-Command",
-          `(Get-CimInstance Win32_Process -Filter "ProcessId = ${directPid}").ParentProcessId`,
-        ],
+        ["-NoProfile", "-NonInteractive", "-Command", script],
         {
           encoding: "utf8",
           stdio: ["ignore", "pipe", "ignore"],
-          timeout: 2500,
+          timeout: 3500,
         }
       ).trim();
-      const parentOfPpid = Number(out);
-      if (parentOfPpid && isProcessAlive(parentOfPpid)) {
-        resolvedPid = parentOfPpid;
+      const nonShellAncestor = Number(out);
+      if (nonShellAncestor && isProcessAlive(nonShellAncestor)) {
+        resolvedPid = nonShellAncestor;
       }
     } catch {}
   } else {
-    // POSIX / Linux: Read field 4 of /proc/<ppid>/stat
+    // POSIX / Linux: Walk up /proc/<pid>/stat field 4, skipping shells
     try {
-      const statPath = `/proc/${directPid}/stat`;
-      if (existsSync(statPath)) {
+      const shells = new Set(["sh", "bash", "dash", "zsh", "fish"]);
+      let curr = directPid;
+      for (let i = 0; i < 6; i++) {
+        const statPath = `/proc/${curr}/stat`;
+        if (!existsSync(statPath)) break;
         const statStr = readFileSync(statPath, "utf8");
         const parts = statStr.split(" ");
-        const parentOfPpid = Number(parts[3]);
-        if (parentOfPpid && isProcessAlive(parentOfPpid)) {
-          resolvedPid = parentOfPpid;
-        }
+        const comm = parts[1]?.replace(/[()]/g, "").toLowerCase();
+        const ppid = Number(parts[3]);
+        if (!ppid || !isProcessAlive(ppid)) break;
+        curr = ppid;
+        if (!shells.has(comm)) break;
+      }
+      if (curr && isProcessAlive(curr)) {
+        resolvedPid = curr;
       }
     } catch {}
   }
@@ -218,7 +236,7 @@ export function resolveTrueHarnessPid(sessionId) {
  */
 export function appendHookAuditLog(entry) {
   try {
-    const logsDir = join(homedir(), ".agent-mesh", "logs");
+    const logsDir = join(getMeshHome(), ".agent-mesh", "logs");
     mkdirSync(logsDir, { recursive: true });
     const logPath = join(logsDir, "hooks.log");
 

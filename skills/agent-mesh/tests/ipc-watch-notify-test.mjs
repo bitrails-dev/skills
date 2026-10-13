@@ -6,7 +6,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -15,6 +15,7 @@ import {
   resolveTrueHarnessPid,
   appendHookAuditLog,
   isProcessAlive,
+  getMeshHome,
 } from "../src/hooks/common.mjs";
 
 test("Multi-Tier IPC Resolution, PID Caching, and Audit Log Suite", async (t) => {
@@ -37,7 +38,8 @@ test("Multi-Tier IPC Resolution, PID Caching, and Audit Log Suite", async (t) =>
     try {
       execFileSync("git", ["init"], { cwd: tmpDir, stdio: "ignore" });
       const expectedPipe = "\\\\.\\pipe\\agent-mesh-test-local";
-      execFileSync("node", ["-e", `require('fs').mkdirSync('${meshDir.replace(/\\/g, "/")}', { recursive: true }); require('fs').writeFileSync('${brokerJson.replace(/\\/g, "/")}', JSON.stringify({ pid: ${process.pid}, ipcAddress: '${expectedPipe.replace(/\\/g, "\\\\")}' }));`], { stdio: "ignore" });
+      mkdirSync(meshDir, { recursive: true });
+      writeFileSync(brokerJson, JSON.stringify({ pid: process.pid, ipcAddress: expectedPipe }), "utf8");
 
       const resolved = resolveIpcAddress(tmpDir);
       assert.equal(resolved, expectedPipe);
@@ -51,7 +53,7 @@ test("Multi-Tier IPC Resolution, PID Caching, and Audit Log Suite", async (t) =>
     const pid = resolveTrueHarnessPid(testSession);
     assert.ok(Number.isInteger(pid) && pid > 0);
 
-    const cachePath = join(homedir(), ".agent-mesh", "pids", `${testSession}.pid`);
+    const cachePath = join(getMeshHome(), ".agent-mesh", "pids", `${testSession}.pid`);
     assert.ok(existsSync(cachePath), "PID cache file must be created");
     const cachedPid = Number(readFileSync(cachePath, "utf8").trim());
     assert.equal(cachedPid, pid);
@@ -67,7 +69,7 @@ test("Multi-Tier IPC Resolution, PID Caching, and Audit Log Suite", async (t) =>
   });
 
   await t.test("4. appendHookAuditLog writes structured JSONL to hooks.log", () => {
-    const logPath = join(homedir(), ".agent-mesh", "logs", "hooks.log");
+    const logPath = join(getMeshHome(), ".agent-mesh", "logs", "hooks.log");
     const markerSession = `audit-sess-${Date.now()}`;
 
     appendHookAuditLog({

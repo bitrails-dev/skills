@@ -129,7 +129,8 @@ export class AgentMeshBroker {
 
     // Mirror active broker pointer to user-global ~/.agent-mesh/broker.json atomically
     try {
-      const globalMeshDir = join(homedir(), ".agent-mesh");
+      const meshHome = process.env.MESH_HOME || homedir();
+      const globalMeshDir = join(meshHome, ".agent-mesh");
       mkdirSync(globalMeshDir, { recursive: true });
       const globalBrokerPath = join(globalMeshDir, "broker.json");
       const tmpPath = `${globalBrokerPath}.${process.pid}.tmp`;
@@ -377,8 +378,11 @@ export class AgentMeshBroker {
             this.repo.updateSessionState(sess.session_id, "idle", null);
           }
         } else if (sess.state === "busy" && sess.updated_at && Date.now() - sess.updated_at > 10 * 60 * 1000) {
-          // Stale busy session sweep (e.g. process terminated without Stop hook)
-          this.repo.updateSessionState(sess.session_id, "idle", null);
+          // Stale busy session sweep (skip if currently executing an in-flight headless turn)
+          const isInFlight = Array.from(this.activeTurns.values()).some((ctrl) => ctrl.sessionId === sess.session_id);
+          if (!isInFlight) {
+            this.repo.updateSessionState(sess.session_id, "idle", null);
+          }
         }
       }
     } catch {}
