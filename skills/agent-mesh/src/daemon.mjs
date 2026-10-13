@@ -5,7 +5,7 @@
  */
 
 import { spawn, execFileSync } from "node:child_process";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, mkdirSync, openSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { homedir } from "node:os";
 import { probeAddress, sendIpcRequest, resolveIpcAddress, findRepoRoot } from "./ipc.mjs";
@@ -73,10 +73,14 @@ export function defaultForceKill(pid) {
  */
 export async function startBroker(rootDir) {
   const brokerScript = resolve(import.meta.dirname, "./broker.mjs");
+  const logsDir = join(rootDir, ".agent-mesh", "logs");
+  mkdirSync(logsDir, { recursive: true });
+  const logFd = openSync(join(logsDir, "broker.log"), "a");
+
   const child = spawn(process.execPath, [brokerScript], {
     cwd: rootDir,
     detached: true,
-    stdio: "ignore",
+    stdio: ["ignore", logFd, logFd],
     windowsHide: true,
   });
 
