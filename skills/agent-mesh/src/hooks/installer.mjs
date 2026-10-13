@@ -240,7 +240,8 @@ export function installAgyHooks(hooksJsonPath, scriptAbsPath) {
   }
 
   const data = read.data;
-  const command = buildHookCommand(scriptAbsPath);
+  const preCommand = buildHookCommand(scriptAbsPath, ["--event", "PreInvocation"]);
+  const stopCommand = buildHookCommand(scriptAbsPath, ["--event", "Stop"]);
 
   backupOnce(hooksJsonPath);
 
@@ -248,14 +249,14 @@ export function installAgyHooks(hooksJsonPath, scriptAbsPath) {
     PreInvocation: [
       {
         type: "command",
-        command,
+        command: preCommand,
         timeout: 10,
       },
     ],
     Stop: [
       {
         type: "command",
-        command,
+        command: stopCommand,
         timeout: 10,
       },
     ],

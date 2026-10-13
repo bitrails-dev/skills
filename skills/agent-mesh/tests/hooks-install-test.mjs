@@ -177,7 +177,11 @@ test("Lifecycle Hook Installer & Uninstaller Suite", async (t) => {
       assert.equal(data["agent-mesh-presence"].Stop.length, 1);
       assert.match(
         data["agent-mesh-presence"].Stop[0].command,
-        /^node "D:\/mesh\/agy-presence-hook\.mjs"$/
+        /node "D:\/mesh\/agy-presence-hook\.mjs".*--event Stop/
+      );
+      assert.match(
+        data["agent-mesh-presence"].PreInvocation[0].command,
+        /node "D:\/mesh\/agy-presence-hook\.mjs".*--event PreInvocation/
       );
 
       // Uninstall

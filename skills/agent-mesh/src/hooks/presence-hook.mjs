@@ -8,19 +8,21 @@
  */
 
 import { resolveIpcAddress, sendIpcRequest } from "../ipc.mjs";
-import { readStdinJson, emitJson } from "./common.mjs";
-
-/**
- * Resolves the parent Claude Code process ID.
- * On Windows/POSIX, process.ppid is the shell or direct caller.
- * @returns {number}
- */
-function resolveHarnessPid() {
-  return process.ppid || process.pid;
-}
+import {
+  readStdinJson,
+  emitJson,
+  resolveTrueHarnessPid,
+  appendHookAuditLog,
+} from "./common.mjs";
 
 async function main() {
-  const input = await readStdinJson();
+  const startTime = Date.now();
+  let input = {};
+
+  try {
+    input = await readStdinJson();
+  } catch {}
+
   const eventName = input.hook_event_name || (input.stop_hook_active !== undefined ? "Stop" : "SessionStart");
   const sessionId = input.session_id;
 
@@ -29,12 +31,13 @@ async function main() {
     process.exit(0);
   }
 
-  const address = resolveIpcAddress(process.cwd());
-  const pid = resolveHarnessPid();
-
   if (!sessionId) {
     process.exit(0);
   }
+
+  const cwd = input.cwd || process.cwd();
+  const address = resolveIpcAddress(cwd);
+  const pid = resolveTrueHarnessPid(sessionId);
 
   const harnessArgIdx = process.argv.indexOf("--harness");
   const harness = harnessArgIdx !== -1 && process.argv[harnessArgIdx + 1]
@@ -43,34 +46,76 @@ async function main() {
 
   switch (eventName) {
     case "SessionStart": {
-      // Announce live session to broker with authentic UUID
-      await sendIpcRequest(address, {
-        action: "session_event",
-        payload: {
-          harness,
-          sessionId,
-          event: "start",
-          pid,
-          cwd: input.cwd || process.cwd(),
-          origin: "interactive",
-        },
-      }, 0).catch(() => {});
+      let ok = false;
+      let err = null;
+      try {
+        const res = await sendIpcRequest(address, {
+          action: "session_event",
+          payload: {
+            harness,
+            sessionId,
+            event: "start",
+            pid,
+            cwd,
+            origin: "interactive",
+          },
+        }, 0);
+        ok = res?.ok ?? false;
+      } catch (e) {
+        err = e.message;
+      }
+
+      appendHookAuditLog({
+        harness,
+        event: "SessionStart",
+        state: "start",
+        sessionId,
+        pid,
+        address,
+        cwd,
+        ok,
+        error: err,
+        durationMs: Date.now() - startTime,
+      });
+
       // Print nothing to avoid polluting model context
       process.exit(0);
       break;
     }
 
     case "UserPromptSubmit": {
-      await sendIpcRequest(address, {
-        action: "session_event",
-        payload: {
-          harness,
-          sessionId,
-          event: "busy",
-          pid,
-          origin: "interactive",
-        },
-      }, 0).catch(() => {});
+      let ok = false;
+      let err = null;
+      try {
+        const res = await sendIpcRequest(address, {
+          action: "session_event",
+          payload: {
+            harness,
+            sessionId,
+            event: "busy",
+            pid,
+            cwd,
+            origin: "interactive",
+          },
+        }, 0);
+        ok = res?.ok ?? false;
+      } catch (e) {
+        err = e.message;
+      }
+
+      appendHookAuditLog({
+        harness,
+        event: "UserPromptSubmit",
+        state: "busy",
+        sessionId,
+        pid,
+        address,
+        cwd,
+        ok,
+        error: err,
+        durationMs: Date.now() - startTime,
+      });
+
       process.exit(0);
       break;
     }
@@ -103,15 +148,53 @@ async function main() {
             action: "ack",
             payload: { ids: res.messages.map((m) => m.id) },
           }, 0).catch(() => {});
+
+          appendHookAuditLog({
+            harness,
+            event: "Stop",
+            state: "block",
+            inboxCount: res.messages.length,
+            sessionId,
+            pid,
+            address,
+            cwd,
+            ok: true,
+            durationMs: Date.now() - startTime,
+          });
         } else {
           // Announce idle
           await sendIpcRequest(address, {
             action: "session_event",
-            payload: { harness, sessionId, event: "idle", pid },
+            payload: { harness, sessionId, event: "idle", pid, cwd },
           }, 0).catch(() => {});
+
+          appendHookAuditLog({
+            harness,
+            event: "Stop",
+            state: "idle",
+            inboxCount: 0,
+            sessionId,
+            pid,
+            address,
+            cwd,
+            ok: true,
+            durationMs: Date.now() - startTime,
+          });
+
           process.exit(0);
         }
-      } catch {
+      } catch (err) {
+        appendHookAuditLog({
+          harness,
+          event: "Stop",
+          sessionId,
+          pid,
+          address,
+          cwd,
+          ok: false,
+          error: err.message,
+          durationMs: Date.now() - startTime,
+        });
         process.exit(0);
       }
       break;
@@ -120,8 +203,21 @@ async function main() {
     case "SessionEnd": {
       await sendIpcRequest(address, {
         action: "session_event",
-        payload: { harness, sessionId, event: "end", pid },
+        payload: { harness, sessionId, event: "end", pid, cwd },
       }, 0).catch(() => {});
+
+      appendHookAuditLog({
+        harness,
+        event: "SessionEnd",
+        state: "end",
+        sessionId,
+        pid,
+        address,
+        cwd,
+        ok: true,
+        durationMs: Date.now() - startTime,
+      });
+
       process.exit(0);
       break;
     }

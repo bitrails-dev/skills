@@ -8,11 +8,26 @@
 import { createServer, createConnection } from "node:net";
 import { createHash } from "node:crypto";
 import { existsSync, unlinkSync, readFileSync } from "node:fs";
-import { tmpdir, userInfo } from "node:os";
+import { tmpdir, userInfo, homedir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 
 const MAX_FRAME_BYTES = 1024 * 1024; // 1 MB protection against buffer bloat
+
+/**
+ * Checks if a process ID is currently running.
+ * @param {number} pid
+ * @returns {boolean}
+ */
+function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+}
 
 /**
  * Finds the canonical git repository root even if called from a subfolder or git worktree.
@@ -54,21 +69,48 @@ export function getIpcAddress(cwd) {
 }
 
 /**
- * Resolves the active IPC address authoritative for this workspace.
- * Prioritizes MESH_IPC_ADDRESS env var, then broker.json on disk, then deterministic hash.
+ * Resolves the active IPC address authoritative for this workspace and user session.
+ * Discovery hierarchy:
+ * 1. MESH_IPC_ADDRESS environment variable
+ * 2. Local workspace broker: <findRepoRoot(dir)>/.agent-mesh/broker.json (if file exists and PID is alive)
+ * 3. User-global broker pointer: ~/.agent-mesh/broker.json (if file exists and PID is alive)
+ * 4. Fallback: deterministic pipe/socket address derived from canonical repo root
+ *
  * @param {string} [dir=process.cwd()]
  * @returns {string} Authoritative pipe or socket address.
  */
 export function resolveIpcAddress(dir = process.cwd()) {
   if (process.env.MESH_IPC_ADDRESS) return process.env.MESH_IPC_ADDRESS;
+
+  // 1. Local workspace broker.json
   const root = findRepoRoot(dir);
-  const brokerPidPath = join(root, ".agent-mesh", "broker.json");
-  if (existsSync(brokerPidPath)) {
+  const localBrokerPath = join(root, ".agent-mesh", "broker.json");
+  if (existsSync(localBrokerPath)) {
     try {
-      const data = JSON.parse(readFileSync(brokerPidPath, "utf8"));
-      if (data?.ipcAddress) return data.ipcAddress;
+      const data = JSON.parse(readFileSync(localBrokerPath, "utf8"));
+      if (data?.ipcAddress) {
+        if (!data.pid || isPidAlive(data.pid)) {
+          return data.ipcAddress;
+        }
+      }
     } catch {}
   }
+
+  // 2. User-global broker.json
+  const globalBrokerPath = join(homedir(), ".agent-mesh", "broker.json");
+  if (existsSync(globalBrokerPath)) {
+    try {
+      const data = JSON.parse(readFileSync(globalBrokerPath, "utf8"));
+      if (data?.ipcAddress) {
+        if (!data.pid || isPidAlive(data.pid)) {
+          return data.ipcAddress;
+        }
+        // Cleanup stale global file
+        try { unlinkSync(globalBrokerPath); } catch {}
+      }
+    } catch {}
+  }
+
   return getIpcAddress(root);
 }
 

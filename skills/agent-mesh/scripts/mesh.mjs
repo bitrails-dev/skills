@@ -8,6 +8,7 @@
 
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { homedir } from "node:os";
 import { getIpcAddress, sendIpcRequest, findRepoRoot, resolveIpcAddress } from "../src/ipc.mjs";
 import { spawnChild } from "../src/drivers/base.mjs";
 import { ensureBroker, stopBroker, isProcessAlive, getBrokerInfo } from "../src/daemon.mjs";
@@ -82,6 +83,112 @@ const cwd = process.cwd();
 const rootDir = findRepoRoot(cwd);
 const meshDir = join(rootDir, ".agent-mesh");
 const ipcAddress = resolveIpcAddress(rootDir);
+
+/**
+ * Real-time watcher for agent-mesh lifecycle presence hook invocations.
+ * Tails ~/.agent-mesh/logs/hooks.log with colorized terminal formatting,
+ * ASCII terminal bell (\x07) for headless VPS/SSH, and optional Windows audio chime/popup.
+ *
+ * @param {string[]} watcherArgs
+ */
+function runHooksWatcher(watcherArgs) {
+  const logPath = join(homedir(), ".agent-mesh", "logs", "hooks.log");
+  const noBell = watcherArgs.includes("--no-bell");
+  const enableSound = watcherArgs.includes("--sound") || watcherArgs.includes("--notify") || process.env.MESH_NOTIFY === "1" || process.env.MESH_NOTIFY_SOUND === "1";
+  const enablePopup = watcherArgs.includes("--popup") || watcherArgs.includes("--notify") || process.env.MESH_NOTIFY_POPUP === "1";
+
+  console.log(`\n======================================================`);
+  console.log(`       AGENT MESH HOOKS REAL-TIME EVENT WATCHER       `);
+  console.log(`======================================================`);
+  console.log(`Log File:      ${logPath}`);
+  console.log(`Terminal Bell: ${noBell ? "Disabled (--no-bell)" : "Enabled (\\x07 for VPS/terminal)"}`);
+  console.log(`Audio Chime:   ${enableSound ? "Enabled (Windows chime)" : "Disabled (use --sound or --notify)"}`);
+  console.log(`Desktop Popup: ${enablePopup ? "Enabled (Windows popup)" : "Disabled (use --popup or --notify)"}`);
+  console.log(`Status:        Listening for live hook triggers... (Ctrl+C to quit)\n`);
+
+  function formatHookLine(rawLine) {
+    if (!rawLine.trim()) return;
+    try {
+      const data = JSON.parse(rawLine);
+      const time = data.timestamp ? data.timestamp.slice(11, 19) : new Date().toLocaleTimeString();
+      const harness = (data.harness || "unknown").toUpperCase();
+      const event = data.event || "Event";
+      const state = data.state ? ` (${data.state})` : "";
+      const sid = data.sessionId ? data.sessionId.slice(0, 8) + "…" : "no-session";
+      const pid = data.pid ? `PID: ${data.pid}` : "no-pid";
+      const dur = data.durationMs !== undefined ? `${data.durationMs}ms` : "";
+      const statusTag = data.ok ? "\x1b[32m[OK]\x1b[0m" : `\x1b[31m[ERR: ${data.error || "failed"}]\x1b[0m`;
+      const harnessTag = `\x1b[1m\x1b[36m[${harness}]\x1b[0m`;
+
+      console.log(`[${time}] ${harnessTag} ${event}${state} | Sid: ${sid} | ${pid} | ${dur} ${statusTag}`);
+
+      // Notifications
+      if (!noBell) {
+        process.stdout.write("\x07");
+      }
+
+      if (enableSound && process.platform === "win32") {
+        spawnChild("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "[System.Media.SystemSounds]::Asterisk.Play()"], {
+          stdio: "ignore",
+          windowsHide: true,
+        });
+      }
+
+      if (enablePopup && process.platform === "win32") {
+        const popupMsg = `Harness: ${harness}\\nEvent: ${event}${state}\\nSession: ${sid}\\n${pid}`;
+        spawnChild("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `(New-Object -ComObject Wscript.Shell).Popup('${popupMsg}', 2, 'Agent Mesh Hook Triggered', 64)`], {
+          stdio: "ignore",
+          windowsHide: true,
+        });
+      }
+    } catch {
+      console.log(`[RAW] ${rawLine}`);
+    }
+  }
+
+  let readOffset = 0;
+  if (existsSync(logPath)) {
+    try {
+      const existing = readFileSync(logPath, "utf8");
+      readOffset = existing.length;
+      const lines = existing.trim().split("\n").filter(Boolean);
+      const recent = lines.slice(-5);
+      if (recent.length > 0) {
+        console.log(`--- Recent Hook Activity (last ${recent.length} events) ---`);
+        for (const line of recent) {
+          formatHookLine(line);
+        }
+        console.log(`--- Streaming new events ---`);
+      }
+    } catch {}
+  } else {
+    console.log(`(Waiting for first hook execution to create log file...)`);
+  }
+
+  const timer = setInterval(() => {
+    if (!existsSync(logPath)) return;
+    try {
+      const current = readFileSync(logPath, "utf8");
+      if (current.length > readOffset) {
+        const delta = current.slice(readOffset);
+        readOffset = current.length;
+        const newLines = delta.split("\n").filter((l) => l.trim().length > 0);
+        for (const line of newLines) {
+          formatHookLine(line);
+        }
+      } else if (current.length < readOffset) {
+        // File rotated
+        readOffset = 0;
+      }
+    } catch {}
+  }, 200);
+
+  process.on("SIGINT", () => {
+    clearInterval(timer);
+    console.log("\nHooks watcher stopped.\n");
+    process.exit(0);
+  });
+}
 
 async function main() {
   const [,, cmd, ...args] = process.argv;
@@ -426,9 +533,9 @@ async function main() {
 
     case "watch": {
       const agent = args[0];
-      if (!agent) {
-        console.error("Usage: mesh watch <agent>");
-        process.exit(1);
+      if (!agent || agent === "hooks" || agent === "--hooks") {
+        runHooksWatcher(args);
+        break;
       }
 
       const logPath = join(meshDir, "logs", `${agent}.jsonl`);
@@ -512,9 +619,16 @@ async function main() {
       break;
     }
 
+    case "doctor":
     case "hooks": {
-      const sub = args[0] || "install";
-      const remainingArgs = args.slice(1);
+      const sub = cmd === "doctor" ? "doctor" : (args[0] || "install");
+      const remainingArgs = cmd === "doctor" ? args : args.slice(1);
+
+      if (sub === "watch") {
+        runHooksWatcher(remainingArgs);
+        break;
+      }
+
       const { harnesses, isProject, isGlobal } = parseHarnessSelection(sub, remainingArgs);
       const scope = isGlobal ? "global" : "project";
 
@@ -554,6 +668,37 @@ async function main() {
           console.log(`${diag.harness.toUpperCase()} [${diag.targetPath}]:`);
           console.log(`  Status: ${diag.status}`);
         }
+
+        // Active Broker Diagnostics
+        console.log(`\n--- BROKER DAEMON STATUS ---`);
+        const brokerInfo = getBrokerInfo(rootDir);
+        if (brokerInfo) {
+          console.log(`  Daemon PID:    ${brokerInfo.pid} (active)`);
+          console.log(`  Version:       ${brokerInfo.version || "1.1.0"}`);
+          console.log(`  IPC Address:   ${brokerInfo.ipcAddress}`);
+        } else {
+          console.log(`  Daemon:        No active broker found on local or global registry.`);
+        }
+
+        // Recent Hook Audit Log Tail
+        const hookLogPath = join(homedir(), ".agent-mesh", "logs", "hooks.log");
+        console.log(`\n--- RECENT HOOK AUDIT LOG (${hookLogPath}) ---`);
+        if (existsSync(hookLogPath)) {
+          const lines = readFileSync(hookLogPath, "utf8").trim().split("\n").filter(Boolean);
+          const recent = lines.slice(-8);
+          for (const line of recent) {
+            try {
+              const d = JSON.parse(line);
+              const time = d.timestamp ? d.timestamp.slice(11, 19) : "";
+              const status = d.ok ? "\x1b[32mOK\x1b[0m" : `\x1b[31mFAIL (${d.error})\x1b[0m`;
+              console.log(`  [${time}] [${d.harness?.toUpperCase()}] ${d.event} (${d.state || ""}) | PID: ${d.pid} | ${status} (${d.durationMs}ms)`);
+            } catch {
+              console.log(`  ${line}`);
+            }
+          }
+        } else {
+          console.log(`  No hook audit log file found yet.`);
+        }
         console.log("");
       }
       break;
@@ -570,12 +715,13 @@ Commands:
   status                             Display current agent sessions, busy status, and queue depth
   hooks install [harnesses...]       Install lifecycle hooks for specified (or detected) harnesses
   hooks uninstall [harnesses...]     Remove agent-mesh hooks cleanly
-  hooks doctor [harnesses...]        Inspect configuration and verify hook registration across harnesses
+  hooks doctor, doctor               Inspect configuration, verify broker, and view recent hook logs
+  hooks watch [--sound] [--popup]    Watch real-time presence hook events with terminal bell & chime
   ask --to <agent>                   Enqueue a non-blocking question for an agent (returns ticket)
   send --to <agent>                  Send a one-way notification message
   reply --ticket <id> --to <agent>   Reply to a previous question ticket
   inbox <agent>                      Inspect pending (or --delivered) messages for an agent
-  watch <agent>                      Live tail an agent's event stream
+  watch <agent> | watch hooks        Live tail an agent's event stream or universal presence hooks
   attach <agent>                     Acquire session lease and launch native interactive harness
       `);
       break;

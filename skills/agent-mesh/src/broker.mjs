@@ -5,8 +5,9 @@
  * turn coalescing, hop limits, and event log streaming.
  */
 
-import { existsSync, writeFileSync, unlinkSync, appendFileSync, mkdirSync } from "node:fs";
+import { existsSync, writeFileSync, unlinkSync, appendFileSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { initDatabase, MeshRepository } from "./db.mjs";
 import { getIpcAddress, startIpcServer } from "./ipc.mjs";
 import { createClaudeDriver } from "./drivers/claude.mjs";
@@ -126,6 +127,16 @@ export class AgentMeshBroker {
     }
     writeFileSync(this.brokerPidPath, JSON.stringify(brokerMeta, null, 2));
 
+    // Mirror active broker pointer to user-global ~/.agent-mesh/broker.json atomically
+    try {
+      const globalMeshDir = join(homedir(), ".agent-mesh");
+      mkdirSync(globalMeshDir, { recursive: true });
+      const globalBrokerPath = join(globalMeshDir, "broker.json");
+      const tmpPath = `${globalBrokerPath}.${process.pid}.tmp`;
+      writeFileSync(tmpPath, JSON.stringify(brokerMeta, null, 2), "utf8");
+      renameSync(tmpPath, globalBrokerPath);
+    } catch {}
+
     // 4. Register process exit cleanup
     const cleanup = () => this.stop();
     process.once("SIGINT", cleanup);
@@ -136,7 +147,6 @@ export class AgentMeshBroker {
       this.reapStaleLeases();
       this.scheduleDispatch();
     }, 30000);
-    this.maintenanceTimer.unref();
 
     // 6. Initial check for pending messages across all registered harnesses
     this.scheduleDispatch();
@@ -366,6 +376,9 @@ export class AgentMeshBroker {
           } else if (sess.state === "human-held") {
             this.repo.updateSessionState(sess.session_id, "idle", null);
           }
+        } else if (sess.state === "busy" && sess.updated_at && Date.now() - sess.updated_at > 10 * 60 * 1000) {
+          // Stale busy session sweep (e.g. process terminated without Stop hook)
+          this.repo.updateSessionState(sess.session_id, "idle", null);
         }
       }
     } catch {}
@@ -642,6 +655,17 @@ Process the message(s) above, take appropriate action, and reply via the CLI.`;
         unlinkSync(this.brokerPidPath);
       } catch {}
     }
+
+    // Clean up user-global broker.json only if owned by this process
+    try {
+      const globalBrokerPath = join(homedir(), ".agent-mesh", "broker.json");
+      if (existsSync(globalBrokerPath)) {
+        const globalData = JSON.parse(readFileSync(globalBrokerPath, "utf8"));
+        if (globalData?.pid === process.pid) {
+          unlinkSync(globalBrokerPath);
+        }
+      }
+    } catch {}
 
     // Close DB
     if (this.db) {

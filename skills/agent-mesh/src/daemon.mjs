@@ -7,6 +7,7 @@
 import { spawn, execFileSync } from "node:child_process";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { homedir } from "node:os";
 import { probeAddress, sendIpcRequest, resolveIpcAddress, findRepoRoot } from "./ipc.mjs";
 import { VERSION, semverLt } from "./version.mjs";
 
@@ -31,21 +32,23 @@ export function isProcessAlive(pid) {
  * @returns {object | null}
  */
 export function getBrokerInfo(rootDir) {
-  const brokerPidPath = join(rootDir, ".agent-mesh", "broker.json");
-  if (!existsSync(brokerPidPath)) return null;
-  try {
-    const data = JSON.parse(readFileSync(brokerPidPath, "utf8"));
-    if (isProcessAlive(data.pid)) {
-      return data;
-    }
-    // Stale PID file
+  const localPath = rootDir ? join(rootDir, ".agent-mesh", "broker.json") : null;
+  const globalPath = join(homedir(), ".agent-mesh", "broker.json");
+
+  for (const brokerPidPath of [localPath, globalPath]) {
+    if (!brokerPidPath || !existsSync(brokerPidPath)) continue;
     try {
-      unlinkSync(brokerPidPath);
+      const data = JSON.parse(readFileSync(brokerPidPath, "utf8"));
+      if (isProcessAlive(data.pid)) {
+        return data;
+      }
+      // Stale PID file
+      try {
+        unlinkSync(brokerPidPath);
+      } catch {}
     } catch {}
-    return null;
-  } catch {
-    return null;
   }
+  return null;
 }
 
 /**
