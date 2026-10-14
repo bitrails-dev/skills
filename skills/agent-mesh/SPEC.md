@@ -181,3 +181,16 @@ interface HarnessDriver {
   2. **Drain-and-Rebind on Contact**: CLI commands verify broker freshness. When an older broker is encountered, the CLI signals `{ action: "restart" }`. The old broker closes its dispatch gate, awaits in-flight turns (up to 5s), checkpoints SQLite WAL (`PRAGMA wal_checkpoint(TRUNCATE)`), closes the IPC server (releasing the pipe handle first), unlinks `broker.json`, and exits. The CLI spawns the updated daemon. If an unversioned legacy broker is encountered, fallback termination is invoked.
   3. **EADDRINUSE Retry**: `startIpcServer` retries binding for up to 3s to absorb OS handle release lag.
   4. **Universal Hook Installer**: Shipped static plugin hooks (`hooks/hooks.json` via `${CLAUDE_PLUGIN_ROOT}`) alongside CLI installer (`mesh hooks install/uninstall/doctor`) supporting Claude Code (`settings.json`) and Antigravity (`hooks.json` with strict JSON I/O and `conversationId`).
+
+---
+
+### ADR-009: Background Broker Lifecycle & Daemon Startup Notifications
+- **Context**: When the central broker daemon is started in the background (detached process via `mesh --init`, `mesh up`, auto-respawn, or OS service), developers working in full-screen terminals or background VPS shells have no immediate visibility into whether the daemon bound successfully, what PID was assigned, or which IPC pipe/socket is authoritative.
+- **Decision**:
+  1. **Daemon Startup Notification**: Upon binding the IPC pipe/socket and writing `broker.json`, the broker immediately dispatches an asynchronous startup notification (`event: "broker_start"`).
+  2. **Multi-Platform Feedback**:
+     - **Windows PC**: Plays an audible chime (`System.Media.SoundPlayer`) and presents a topmost system modal dialog (`Wscript.Shell.Popup` with `MB_SYSTEMMODAL | MB_ICONINFORMATION` [4160], auto-dismissing in 2s):
+       `[Agent Mesh] Broker Daemon Started (v<version>)\nPID: <pid>\nIPC: <address>`
+     - **Headless VPS / Terminal**: Emits terminal bell (`\x07` on stderr) and logs formatted JSON to `.agent-mesh/logs/broker.log` and `.agent-mesh/logs/hooks.log` for real-time monitoring via `mesh watch`.
+  3. **Daemon Shutdown Notification**: On clean graceful shutdown (`event: "broker_stop"`), dispatches a final shutdown event notification to confirm socket handle release and SQLite WAL checkpoint completion.
+
