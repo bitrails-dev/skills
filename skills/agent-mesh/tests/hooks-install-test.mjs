@@ -26,6 +26,14 @@ import {
   autoDiscoverHarnesses,
 } from "../src/hooks/installer.mjs";
 
+import { mkdtempSync as __mkHome } from "node:fs";
+import { tmpdir as __tmpHome } from "node:os";
+import { join as __joinHome } from "node:path";
+
+// Isolate from the user's live broker/state: hooks and CLI children inherit this MESH_HOME.
+process.env.MESH_HOME = __mkHome(__joinHome(__tmpHome(), "mesh-test-home-"));
+
+
 /**
  * Utility: safe recursive directory removal with retry for Windows file locks.
  *
@@ -69,7 +77,7 @@ test("Lifecycle Hook Installer & Uninstaller Suite", async (t) => {
         assert.ok(data.hooks[ev], `Event ${ev} must exist`);
         assert.equal(data.hooks[ev].length, 1);
         const cmd = data.hooks[ev][0].hooks[0].command;
-        assert.match(cmd, /^node "D:\/test\/skills\/agent-mesh\/src\/hooks\/presence-hook\.mjs"$/);
+        assert.match(cmd, /^node D:\/test\/skills\/agent-mesh\/src\/hooks\/presence-hook\.mjs$/);
         assert.equal(cmd.includes("\\"), false, "Command must contain forward slashes, no backslashes");
       }
     } finally {
@@ -201,15 +209,15 @@ test("Lifecycle Hook Installer & Uninstaller Suite", async (t) => {
       assert.equal(data["agent-mesh-presence"].Stop.length, 1);
       assert.match(
         data["agent-mesh-presence"].SessionStart[0].command,
-        /node "D:\/mesh\/agy-presence-hook\.mjs".*--event SessionStart/
+        /node D:\/mesh\/agy-presence-hook\.mjs.*--event SessionStart/
       );
       assert.match(
         data["agent-mesh-presence"].Stop[0].command,
-        /node "D:\/mesh\/agy-presence-hook\.mjs".*--event Stop/
+        /node D:\/mesh\/agy-presence-hook\.mjs.*--event Stop/
       );
       assert.match(
         data["agent-mesh-presence"].PreInvocation[0].command,
-        /node "D:\/mesh\/agy-presence-hook\.mjs".*--event PreInvocation/
+        /node D:\/mesh\/agy-presence-hook\.mjs.*--event PreInvocation/
       );
 
       // Uninstall

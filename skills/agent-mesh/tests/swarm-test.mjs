@@ -13,6 +13,14 @@ import { join } from "node:path";
 import { AgentMeshBroker } from "../src/broker.mjs";
 import { sendIpcRequest } from "../src/ipc.mjs";
 
+import { mkdtempSync as __mkHome } from "node:fs";
+import { tmpdir as __tmpHome } from "node:os";
+import { join as __joinHome } from "node:path";
+
+// Isolate from the user's live broker/state: hooks and CLI children inherit this MESH_HOME.
+process.env.MESH_HOME = __mkHome(__joinHome(__tmpHome(), "mesh-test-home-"));
+
+
 // Skip the (slow) process-tree walk in tests; the direct parent is the harness stand-in.
 process.env.MESH_NO_PID_WALK = "1";
 

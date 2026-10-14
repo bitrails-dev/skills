@@ -33,6 +33,7 @@ async function announce(event, pi, ev = {}) {
       pid,
       cwd,
       origin: "interactive",
+      notify: event === "start" || event === "end",
     },
   }, 0).catch(() => {});
 }

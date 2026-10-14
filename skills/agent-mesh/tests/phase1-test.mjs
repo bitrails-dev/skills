@@ -15,6 +15,14 @@ import { getIpcAddress, startIpcServer, sendIpcRequest } from "../src/ipc.mjs";
 import { createResumeDriver } from "../src/drivers/base.mjs";
 import { AgentMeshBroker } from "../src/broker.mjs";
 
+import { mkdtempSync as __mkHome } from "node:fs";
+import { tmpdir as __tmpHome } from "node:os";
+import { join as __joinHome } from "node:path";
+
+// Isolate from the user's live broker/state: hooks and CLI children inherit this MESH_HOME.
+process.env.MESH_HOME = __mkHome(__joinHome(__tmpHome(), "mesh-test-home-"));
+
+
 describe("Phase 1: Agent Mesh Core Validation", () => {
   let tempDir;
   let dbPath;

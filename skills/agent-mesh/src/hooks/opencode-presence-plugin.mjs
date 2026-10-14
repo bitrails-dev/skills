@@ -1,83 +1,71 @@
 /**
  * @file opencode-presence-plugin.mjs
  * @description OpenCode lifecycle presence and inbox claim plugin for agent-mesh.
- * Subscribes to OpenCode plugin events:
- * - session.created: Announces live interactive session to the broker.
- * - turn.started: Announces busy state.
- * - turn.completed: Claims pending inbox messages and marks session idle.
- * - session.ended: Announces session termination.
+ * OpenCode calls a plugin as `async (ctx) => hooks` and delivers bus events to `hooks.event({ event })`:
+ * - plugin load:      announces the live interactive session (start) so presence never depends on session.created
+ * - session.created:  announces the real session id (supersedes the load-time placeholder)
+ * - session.status busy / message.updated: announces busy
+ * - session.idle:     claims pending inbox messages and marks the session idle
+ * - session.deleted:  announces end
+ * Process exit is covered by the broker's PID watcher.
  */
 
 import { resolveIpcAddress, sendIpcRequest } from "../ipc.mjs";
 
-function getAddress() {
-  return resolveIpcAddress(process.cwd());
-}
+let loaded = false; // OpenCode invokes every exported function; register once per process
+let currentSession = `opencode-${process.pid}`;
 
-async function announce(event, data = {}) {
+const send = (address, action, payload) =>
+  sendIpcRequest(address, { action, payload }, 0).catch(() => null);
+
+async function announce(event, sessionId, cwd) {
   // Headless guard: if invoked inside a mesh headless turn, avoid duplicate presence cycles
   if (process.env.MESH_AGENT) return;
-
-  const address = getAddress();
-  const sessionId = data.session?.id || data.sessionId || data.id || `opencode-${Date.now()}`;
-  const cwd = data.session?.directory || data.cwd || process.cwd();
-  const pid = process.pid;
-
-  await sendIpcRequest(address, {
-    action: "session_event",
-    payload: {
-      harness: "opencode",
-      sessionId,
-      event,
-      pid,
-      cwd,
-      origin: "interactive",
-    },
-  }, 0).catch(() => {});
+  const id = sessionId || currentSession;
+  currentSession = id;
+  await send(resolveIpcAddress(process.cwd()), "session_event", {
+    harness: "opencode",
+    sessionId: id,
+    event,
+    pid: process.pid,
+    cwd: cwd || process.cwd(),
+    origin: "interactive",
+    notify: event === "start" || event === "end", // plugins have no hook-side toast
+  });
 }
 
-async function onTurnCompleted(data = {}) {
+async function onIdle(sessionId) {
   if (process.env.MESH_AGENT) return;
-
-  const address = getAddress();
-  const sessionId = data.session?.id || data.sessionId || data.id || `opencode-${Date.now()}`;
-  const pid = process.pid;
-
-  try {
-    const res = await sendIpcRequest(address, {
-      action: "claim_inbox",
-      payload: { agent: "opencode", sessionId },
-    }, 0).catch(() => null);
-
-    if (res?.ok && Array.isArray(res.messages) && res.messages.length > 0) {
-      // Acknowledge received messages
-      await sendIpcRequest(address, {
-        action: "ack",
-        payload: { ids: res.messages.map((m) => m.id) },
-      }, 0).catch(() => {});
-    }
-  } catch {}
-
-  // Announce idle
-  await sendIpcRequest(address, {
-    action: "session_event",
-    payload: { harness: "opencode", sessionId, event: "idle", pid },
-  }, 0).catch(() => {});
+  const address = resolveIpcAddress(process.cwd());
+  const id = sessionId || currentSession;
+  const res = await send(address, "claim_inbox", { agent: "opencode", sessionId: id });
+  if (res?.ok && Array.isArray(res.messages) && res.messages.length > 0) {
+    await send(address, "ack", { ids: res.messages.map((m) => m.id) });
+  }
+  await announce("idle", id);
 }
 
-export default function opencodePresencePlugin(api) {
-  if (typeof api?.on === "function") {
-    api.on("session.created", (ev) => announce("start", ev));
-    api.on("turn.started", (ev) => announce("busy", ev));
-    api.on("turn.completed", (ev) => onTurnCompleted(ev));
-    api.on("session.ended", (ev) => announce("end", ev));
-  }
+export default async function opencodePresencePlugin(ctx = {}) {
+  if (loaded) return {};
+  loaded = true;
+
+  await announce("start", currentSession, ctx.directory);
 
   return {
-    "session.created": async (ev) => announce("start", ev),
-    "turn.started": async (ev) => announce("busy", ev),
-    "turn.completed": async (ev) => onTurnCompleted(ev),
-    "session.ended": async (ev) => announce("end", ev),
+    event: async ({ event }) => {
+      const p = event?.properties || {};
+      switch (event?.type) {
+        case "session.created":
+          return announce("start", p.info?.id, p.info?.directory);
+        case "session.status":
+          if (p.status?.type === "busy") return announce("busy", p.sessionID);
+          return;
+        case "session.idle":
+          return onIdle(p.sessionID);
+        case "session.deleted":
+          return announce("end", p.info?.id);
+      }
+    },
   };
 }
 

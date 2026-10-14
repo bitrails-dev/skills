@@ -27,7 +27,10 @@ export const MESH_HOOK_MATCHER = /(?:agy-)?presence-hook\.mjs|stop-hook\.mjs|ope
 export function buildHookCommand(scriptAbsPath, extraArgs = []) {
   const normalized = scriptAbsPath.replace(/\\/g, "/");
   const argsStr = extraArgs.length > 0 ? " " + extraArgs.join(" ") : "";
-  return `node "${normalized}"${argsStr}`;
+  // agy's hook runner mangles double-quoted paths (joins them onto its config dir), so only quote
+  // when the path actually contains whitespace.
+  const script = /\s/.test(normalized) ? `"${normalized}"` : normalized;
+  return `node ${script}${argsStr}`;
 }
 
 /**

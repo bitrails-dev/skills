@@ -24,7 +24,7 @@ async function main() {
   const startTime = Date.now();
 
   // Hard execution timeout: guarantee hook exits cleanly before any harness timeout
-  const safetyTimer = setTimeout(() => process.exit(0), 3000);
+  const safetyTimer = setTimeout(() => process.exit(0), 9000);
   safetyTimer.unref?.();
 
   let phase = "Stop"; // Safe default

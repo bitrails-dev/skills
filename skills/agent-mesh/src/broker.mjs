@@ -246,7 +246,7 @@ export class AgentMeshBroker {
       }
 
       case "session_event": {
-        const { harness, sessionId, event, pid, cwd, origin } = req.payload;
+        const { harness, sessionId, event, pid, cwd, origin, notify } = req.payload;
         const resolvedHarness = this.resolveAgent(harness);
         const res = this.repo.updateSessionEvent({
           harness: resolvedHarness,
@@ -267,14 +267,15 @@ export class AgentMeshBroker {
           }
         }
 
-        // Hooks raise the session start/end toast themselves (works with the broker down);
-        // notifyDesktop's OS filter keeps these silent to avoid duplicates.
+        // Hooks raise the session start/end toast themselves (works with the broker down); in-process
+        // plugins (OpenCode, Pi) set `notify` so the broker toasts on their behalf.
         this.notifyDesktop({
           harness: resolvedHarness,
           event,
           state: res.state,
           sessionId,
           pid: Number(pid) || null,
+          force: Boolean(notify),
         });
 
         return { ok: true, state: res.state };
@@ -668,19 +669,21 @@ Process the message(s) above, take appropriate action, and reply via the CLI.`;
    * @param {string} [params.sessionId]
    * @param {number|null} [params.pid]
    */
-  notifyDesktop({ harness, event, state, sessionId, pid }) {
+  notifyDesktop({ harness, event, state, sessionId, pid, force }) {
     if (process.env.MESH_SILENT === "1") return;
     if (process.platform !== "win32") return;
 
     // Hooks announce session start/end themselves; the broker only raises daemon/inbox/kill events.
     const notifyEvents = new Set(["inbox", "broker_start", "broker_stop", "killed"]);
-    if (!notifyEvents.has(event)) return;
+    if (!notifyEvents.has(event) && !(force && (event === "start" || event === "end"))) return;
 
     const labels = {
       broker_start: "Broker started",
       broker_stop: "Broker stopped",
       inbox: "New message",
       killed: "Session killed",
+      start: "Session started",
+      end: "Session ended",
     };
     const who = event.startsWith("broker_") ? `PID ${pid}` : `${String(harness).toUpperCase()} ${sessionId ? String(sessionId).slice(0, 8) : ""}${pid ? ` [PID ${pid}]` : ""}`;
     const body = `${who}${state ? ` (${state})` : ""}`;
@@ -762,7 +765,7 @@ Process the message(s) above, take appropriate action, and reply via the CLI.`;
 
     // Clean up user-global broker.json only if owned by this process
     try {
-      const globalBrokerPath = join(homedir(), ".agent-mesh", "broker.json");
+      const globalBrokerPath = join(process.env.MESH_HOME || homedir(), ".agent-mesh", "broker.json");
       if (existsSync(globalBrokerPath)) {
         const globalData = JSON.parse(readFileSync(globalBrokerPath, "utf8"));
         if (globalData?.pid === process.pid) {

@@ -22,8 +22,9 @@ import {
 async function main() {
   const startTime = Date.now();
 
-  // Hard execution timeout: guarantee hook never exceeds 1000ms under any circumstances
-  const safetyTimer = setTimeout(() => process.exit(0), 1000);
+  // Hard execution timeout. Budget covers the once-per-session process-tree walk (1-5s) that
+  // blocks the event loop; an overdue 1s timer would otherwise exit before the broker announce.
+  const safetyTimer = setTimeout(() => process.exit(0), 8000);
   safetyTimer.unref?.();
 
   let input = {};

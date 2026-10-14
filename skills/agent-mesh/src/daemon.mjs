@@ -33,7 +33,7 @@ export function isProcessAlive(pid) {
  */
 export function getBrokerInfo(rootDir) {
   const localPath = rootDir ? join(rootDir, ".agent-mesh", "broker.json") : null;
-  const globalPath = join(homedir(), ".agent-mesh", "broker.json");
+  const globalPath = join(process.env.MESH_HOME || homedir(), ".agent-mesh", "broker.json");
 
   for (const brokerPidPath of [localPath, globalPath]) {
     if (!brokerPidPath || !existsSync(brokerPidPath)) continue;
