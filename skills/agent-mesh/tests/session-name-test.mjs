@@ -40,8 +40,18 @@ test("broker stores session name and announces renames (not initial naming)", as
     await send("busy", "second");
     const r = notified.find((n) => n.event === "renamed");
     assert.ok(r && r.state.includes("second"), "rename must notify");
+    // /rename without any hook event: broker notices the transcript change on its own
+    const tp = join(dir, "t.jsonl");
+    writeFileSync(tp, JSON.stringify({ type: "custom-title", customTitle: "third" }));
+    await send("busy", "second");
+    await sendIpcRequest(broker.ipcAddress, {
+      action: "session_event",
+      payload: { harness: "claude", sessionId: "named-1", event: "busy", pid: process.pid, cwd: dir, transcript: tp },
+    });
+    broker.watchSessionNames();
+    assert.ok(notified.some((n) => n.event === "renamed" && n.state.includes("third")), "transcript rename must notify");
     const st = await sendIpcRequest(broker.ipcAddress, { action: "status" });
-    assert.equal(st.liveSessions.find((s) => s.session_id === "named-1").name, "second");
+    assert.equal(st.liveSessions.find((s) => s.session_id === "named-1").name, "third");
   } finally {
     await broker.stop();
   }

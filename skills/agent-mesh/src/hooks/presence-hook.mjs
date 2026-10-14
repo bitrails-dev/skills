@@ -83,6 +83,7 @@ async function main() {
   const address = resolveIpcAddress(cwd);
   const pid = resolveTrueHarnessPid(sessionId, { harness, event: eventName });
   const name = resolveSessionName(harness, sessionId, input);
+  const transcript = input.transcript_path || null; // lets the broker notice /rename without a hook event
 
   // Background/forked/daemon processes are not user terminals: stay silent (no session, no toast).
   if (isBackgroundSession(sessionId)) {
@@ -104,6 +105,7 @@ async function main() {
             cwd,
             origin: "interactive",
             name,
+            transcript,
           },
         }, 0, { timeoutMs: 800 });
         ok = res?.ok ?? false;
@@ -151,6 +153,7 @@ async function main() {
             cwd,
             origin: "interactive",
             name,
+            transcript,
           },
         }, 0, { timeoutMs: 800 });
         ok = res?.ok ?? false;
@@ -228,7 +231,7 @@ async function main() {
           // Announce idle
           await sendIpcRequest(address, {
             action: "session_event",
-            payload: { harness, sessionId, event: "idle", pid, cwd, name },
+            payload: { harness, sessionId, event: "idle", pid, cwd, name, transcript },
           }, 0, { timeoutMs: 800 }).catch(() => {});
 
           appendHookAuditLog({

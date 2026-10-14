@@ -335,6 +335,20 @@ export class MeshRepository {
   }
 
   /**
+   * Sets a session's display name without touching its state/pid.
+   * @param {string} sessionId
+   * @param {string} name
+   * @returns {{from: string|null, to: string}|null} Change record, or null if unchanged/unknown session.
+   */
+  setSessionName(sessionId, name) {
+    const row = this.db.prepare("SELECT name FROM sessions WHERE session_id = ?").get(sessionId);
+    const next = String(name).slice(0, 120);
+    if (!row || row.name === next) return null;
+    this.db.prepare("UPDATE sessions SET name = ? WHERE session_id = ?").run(next, sessionId);
+    return { from: row.name ?? null, to: next };
+  }
+
+  /**
    * Lists all live sessions (not closed or lost).
    * @returns {Array<object>}
    */

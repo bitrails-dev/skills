@@ -5,7 +5,7 @@
  * turn coalescing, hop limits, and event log streaming.
  */
 
-import { existsSync, writeFileSync, unlinkSync, appendFileSync, mkdirSync, readFileSync, renameSync } from "node:fs";
+import { statSync, existsSync, writeFileSync, unlinkSync, appendFileSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
@@ -20,6 +20,7 @@ import { createAcpDriver } from "./drivers/acp.mjs";
 import { ensureAgentWorktree } from "./worktree.mjs";
 import { VERSION } from "./version.mjs";
 import { toastArgs } from "./notify.mjs";
+import { resolveSessionName } from "./hooks/common.mjs";
 
 /**
  * Safe process liveness check.
@@ -68,6 +69,7 @@ export class AgentMeshBroker {
     this.drivers = new Map();
     this.busyAgents = new Set();
     this.activeTurns = new Map(); // agentId -> AbortController
+    this.transcripts = new Map(); // sessionId -> { harness, path, mtime } for /rename detection
     this.turnRetries = new Map(); // agentId -> consecutive failed turns
     this.messageRetries = new Map(); // ticketId -> retry attempts
     this.ipcServer = null;
@@ -152,7 +154,10 @@ export class AgentMeshBroker {
     }, 30000);
 
     // 5b. PID watch: one kill(pid, 0) per live session every 2s (cheap) reports killed sessions
-    this.pidWatchTimer = setInterval(() => this.reapStaleLeases(), 2000);
+    this.pidWatchTimer = setInterval(() => {
+      this.reapStaleLeases();
+      this.watchSessionNames();
+    }, 2000);
     this.pidWatchTimer.unref?.();
 
     // 6. Initial check for pending messages across all registered harnesses
@@ -246,7 +251,9 @@ export class AgentMeshBroker {
       }
 
       case "session_event": {
-        const { harness, sessionId, event, pid, cwd, origin, notify, name } = req.payload;
+        const { harness, sessionId, event, pid, cwd, origin, notify, name, transcript } = req.payload;
+        if (transcript) this.transcripts.set(sessionId, { harness: this.resolveAgent(harness), path: transcript, mtime: 0 });
+        if (event === "end" || event === "closed") this.transcripts.delete(sessionId);
         const resolvedHarness = this.resolveAgent(harness);
         const res = this.repo.updateSessionEvent({
           harness: resolvedHarness,
@@ -407,6 +414,32 @@ export class AgentMeshBroker {
    */
   scheduleDispatch() {
     setImmediate(() => this.dispatchPending());
+  }
+
+  /**
+   * Detects session renames (e.g. Claude /rename) by re-reading a transcript whose mtime changed,
+   * so the toast fires when the name changes instead of at the next hook event.
+   */
+  watchSessionNames() {
+    for (const [sessionId, t] of this.transcripts) {
+      try {
+        const mtime = statSync(t.path).mtimeMs;
+        if (mtime === t.mtime) continue;
+        t.mtime = mtime;
+        const name = resolveSessionName(t.harness, sessionId, { transcript_path: t.path });
+        if (!name) continue;
+        const renamed = this.repo.setSessionName(sessionId, name);
+        if (renamed) {
+          this.notifyDesktop({
+            harness: t.harness,
+            event: "renamed",
+            state: `${renamed.from ? `"${renamed.from}" -> ` : ""}"${renamed.to}"`,
+            sessionId,
+            pid: null,
+          });
+        }
+      } catch {}
+    }
   }
 
   /**
