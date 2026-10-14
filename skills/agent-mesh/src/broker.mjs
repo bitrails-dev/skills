@@ -680,7 +680,7 @@ Process the message(s) above, take appropriate action, and reply via the CLI.`;
             }
             (New-Object -ComObject Wscript.Shell).Popup(@"
 ${popupText}
-"@, 2, 'Agent Mesh Presence', 64);
+"@, 2, 'Agent Mesh Presence', 4160);
           } catch {}
         `;
         const encoded = Buffer.from(psScript, "utf16le").toString("base64");

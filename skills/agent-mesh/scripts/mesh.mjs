@@ -156,7 +156,7 @@ function runHooksWatcher(watcherArgs) {
             try {
               (New-Object -ComObject Wscript.Shell).Popup(@"
 ${popupMsg}
-"@, 2, 'Agent Mesh Hook Triggered', 64);
+"@, 2, 'Agent Mesh Hook Triggered', 4160);
             } catch {}
           `;
           const encodedPopup = Buffer.from(psPopup, "utf16le").toString("base64");
