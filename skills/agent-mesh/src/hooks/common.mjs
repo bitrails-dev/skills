@@ -157,6 +157,19 @@ export function getMeshHome() {
  * @param {boolean} [options.fastOnly]
  * @returns {number}
  */
+const BACKGROUND_CMD = /daemon\s+run|--fork-session|--agent|(?:^|\s)(?:-p|--print)(?:\s|$)/;
+
+/**
+ * True when the session's harness process was identified as a background (non-terminal) process.
+ * @param {string} sessionId
+ * @returns {boolean}
+ */
+export function isBackgroundSession(sessionId) {
+  if (!sessionId) return false;
+  const clean = String(sessionId).replace(/[^\w-]/g, "");
+  return existsSync(join(getMeshHome(), ".agent-mesh", "pids", `${clean}.bg`));
+}
+
 export function resolveTrueHarnessPid(sessionId, options = {}) {
   const directPid = process.ppid || process.pid;
   if (!sessionId) return directPid;
@@ -178,7 +191,8 @@ export function resolveTrueHarnessPid(sessionId, options = {}) {
     return directPid;
   }
 
-  // 2. Check cache first (< 0.2ms)
+  // 2. Check cache first (< 0.2ms). Sessions hosted by a shared app-server have no PID of their own.
+  if (existsSync(join(pidsDir, `${cleanSessionId}.nopid`))) return null;
   try {
     if (existsSync(pidFile)) {
       const cached = Number(readFileSync(pidFile, "utf8").trim());
@@ -192,19 +206,24 @@ export function resolveTrueHarnessPid(sessionId, options = {}) {
   // Windows: one pwsh/powershell invocation (Get-Process .Parent, ~1-2s) paid once per session, then cached.
   const shells = ["cmd", "powershell", "pwsh", "conhost", "bash", "sh", "dash", "zsh", "fish", "wsl"];
   let resolvedPid = directPid;
+  let cmdline = "";
   try {
     if (process.env.MESH_NO_PID_WALK === "1") {
       // test/opt-out: trust the direct parent
     } else if (process.platform === "win32") {
       const script =
         `$s=@('${shells.join("','")}');$p=Get-Process -Id ${directPid} -ErrorAction SilentlyContinue;` +
-        `while($p -and $p.ProcessName.ToLower() -in $s -and $p.Parent){$p=$p.Parent};if($p){$p.Id}`;
+        `while($p -and $p.ProcessName.ToLower() -in $s -and $p.Parent){$p=$p.Parent};if($p){"$($p.Id)|$($p.CommandLine)"}`;
       const out = execFileSync(
         "pwsh.exe",
         ["-NoProfile", "-NonInteractive", "-Command", script],
         { encoding: "utf8", timeout: 5000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }
       ).trim();
-      if (/^\d+$/.test(out)) resolvedPid = Number(out);
+      const m = out.match(/^(\d+)\|(.*)$/s);
+      if (m) {
+        resolvedPid = Number(m[1]);
+        cmdline = m[2];
+      }
     } else {
       let curr = directPid;
       for (let i = 0; i < 8; i++) {
@@ -214,8 +233,26 @@ export function resolveTrueHarnessPid(sessionId, options = {}) {
         curr = Number(ppid);
       }
       resolvedPid = curr;
+      cmdline = execFileSync("ps", ["-o", "args=", "-p", String(curr)], { encoding: "utf8" });
     }
   } catch {}
+  // Background/daemon-spawned harness processes (forks, --agent workers, daemons, -p runs) are not
+  // user terminals: mark them so hooks stay silent instead of registering phantom sessions.
+  if (BACKGROUND_CMD.test(cmdline)) {
+    try {
+      mkdirSync(pidsDir, { recursive: true });
+      writeFileSync(join(pidsDir, `${cleanSessionId}.bg`), "1", "utf8");
+    } catch {}
+  }
+  // Codex hooks run inside the long-lived `codex app-server` daemon shared by every session: its PID
+  // outlives all of them, so report no PID and let the broker's inactivity TTL close idle sessions.
+  if (/app-server/.test(cmdline)) {
+    try {
+      mkdirSync(pidsDir, { recursive: true });
+      writeFileSync(join(pidsDir, `${cleanSessionId}.nopid`), "1", "utf8");
+    } catch {}
+    return null;
+  }
   if (resolvedPid && isProcessAlive(resolvedPid)) {
     try {
       mkdirSync(pidsDir, { recursive: true });

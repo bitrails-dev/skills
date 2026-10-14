@@ -18,6 +18,7 @@ import { tmpdir as __tmpHome } from "node:os";
 import { join as __joinHome } from "node:path";
 
 // Isolate from the user's live broker/state: hooks and CLI children inherit this MESH_HOME.
+process.env.MESH_SILENT = "1"; // tests must never raise desktop notifications
 process.env.MESH_HOME = __mkHome(__joinHome(__tmpHome(), "mesh-test-home-"));
 
 

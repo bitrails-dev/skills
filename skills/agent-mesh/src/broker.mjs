@@ -430,9 +430,17 @@ export class AgentMeshBroker {
           }
         } else if (sess.origin === "interactive") {
           // Untracked or asynchronously-resolved sessions without a verified OS PID:
-          // Keep active and rely on inactivity TTL (60 min) rather than premature reaping
-          if (sess.updated_at && now - sess.updated_at > 60 * 60 * 1000) {
+          // Idle sessions expire after 10 min of silence; busy ones keep the 60 min inactivity TTL
+          const ttl = sess.state === "busy" ? 60 * 60 * 1000 : 10 * 60 * 1000;
+          if (sess.updated_at && now - sess.updated_at > ttl) {
             this.repo.updateSessionState(sess.session_id, "closed", null);
+            this.notifyDesktop({
+              harness: sess.harness,
+              event: "killed",
+              state: "inactive",
+              sessionId: sess.session_id,
+              pid: null,
+            });
           }
         }
       }

@@ -14,6 +14,7 @@ import {
   readStdinJson,
   emitJson,
   resolveTrueHarnessPid,
+  isBackgroundSession,
   appendHookAuditLog,
   notifyHookPresence,
   getMeshHome,
@@ -80,6 +81,11 @@ async function main() {
   const cwd = input.cwd || process.cwd();
   const address = resolveIpcAddress(cwd);
   const pid = resolveTrueHarnessPid(sessionId, { harness, event: eventName });
+
+  // Background/forked/daemon processes are not user terminals: stay silent (no session, no toast).
+  if (isBackgroundSession(sessionId)) {
+    process.exit(0);
+  }
 
   switch (eventName) {
     case "SessionStart": {
