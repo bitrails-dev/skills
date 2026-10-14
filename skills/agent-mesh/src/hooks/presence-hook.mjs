@@ -254,10 +254,28 @@ async function main() {
     }
 
     case "SessionEnd": {
-      await sendIpcRequest(address, {
-        action: "session_event",
-        payload: { harness, sessionId, event: "end", pid, cwd },
-      }, 0, { timeoutMs: 150 }).catch(() => {});
+      // Toast first: harnesses may kill the hook right after exit, and it must not depend on the broker.
+      notifyHookPresence({
+        harness,
+        event: "SessionEnd",
+        state: "end",
+        sessionId,
+        pid,
+      });
+
+      // 150ms was too tight (session stayed live on a long-lived harness PID); 800ms stays well
+      // inside harness SessionEnd cancellation windows.
+      let endOk = true;
+      let endErr = null;
+      try {
+        await sendIpcRequest(address, {
+          action: "session_event",
+          payload: { harness, sessionId, event: "end", pid, cwd },
+        }, 0, { timeoutMs: 800 });
+      } catch (e) {
+        endOk = false;
+        endErr = e.message;
+      }
 
       // Clean up session pid cache and lock files
       try {
@@ -267,14 +285,6 @@ async function main() {
         unlinkSync(lockFile);
       } catch {}
 
-      notifyHookPresence({
-        harness,
-        event: "SessionEnd",
-        state: "end",
-        sessionId,
-        pid,
-      });
-
       appendHookAuditLog({
         harness,
         event: "SessionEnd",
@@ -283,7 +293,8 @@ async function main() {
         pid,
         address,
         cwd,
-        ok: true,
+        ok: endOk,
+        error: endErr,
         durationMs: Date.now() - startTime,
       });
 
