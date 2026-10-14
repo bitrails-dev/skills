@@ -414,7 +414,7 @@ export class AgentMeshBroker {
               this.notifyDesktop({
                 harness: sess.harness,
                 event: "killed",
-                state: "process exited",
+                state: "process exited", // graceful exits without a SessionEnd hook (e.g. Codex) land here
                 sessionId: sess.session_id,
                 pid: sess.pid,
               });
@@ -681,7 +681,7 @@ Process the message(s) above, take appropriate action, and reply via the CLI.`;
       broker_start: "Broker started",
       broker_stop: "Broker stopped",
       inbox: "New message",
-      killed: "Session killed",
+      killed: "Session ended",
       start: "Session started",
       end: "Session ended",
     };

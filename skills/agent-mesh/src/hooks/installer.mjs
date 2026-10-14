@@ -513,9 +513,7 @@ export function resolveHarnessPaths(harness, options = {}, rootDir = process.cwd
     }
     case "opencode": {
       const openCodeBase = isGlobal
-        ? (process.platform === "win32"
-            ? join(process.env.APPDATA || join(homedir(), "AppData", "Roaming"), "OpenCode")
-            : join(homedir(), ".config", "opencode"))
+        ? join(homedir(), ".config", "opencode") // the OpenCode CLI/TUI reads ~/.config on every OS (incl. Windows)
         : join(rootDir, ".opencode");
       const configPath = join(openCodeBase, "opencode.json");
       const pluginLoaderPath = join(openCodeBase, "plugins", "agent-mesh-presence.js");
@@ -595,9 +593,7 @@ export function autoDiscoverHarnesses(options = {}, rootDir = process.cwd()) {
   }
 
   // 4. OpenCode
-  const openCodeDir = process.platform === "win32"
-    ? join(process.env.APPDATA || join(homedir(), "AppData", "Roaming"), "OpenCode")
-    : join(homedir(), ".config", "opencode");
+  const openCodeDir = join(homedir(), ".config", "opencode");
   const hasOpenCode = isCommandAvailable("opencode")
     || existsSync(openCodeDir)
     || existsSync(join(homedir(), ".opencode"))
