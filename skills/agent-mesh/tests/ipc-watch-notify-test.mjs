@@ -140,12 +140,12 @@ test("Multi-Tier IPC Resolution, PID Caching, and Audit Log Suite", async (t) =>
       input: payload,
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"],
-      timeout: 1000,
+      timeout: 5000,
     });
     const duration = Date.now() - start;
 
-    // Must finish cleanly within 1200ms (accounting for node.exe cold start)
-    assert.ok(duration < 1200, `presence-hook SessionEnd took ${duration}ms, must be < 1200ms`);
+    // Must finish cleanly within 2500ms (node cold start + synchronous cmd-start popup launch under parallel suite load)
+    assert.ok(duration < 2500, `presence-hook SessionEnd took ${duration}ms, must be < 2500ms`);
 
     // Cleanup
     try {

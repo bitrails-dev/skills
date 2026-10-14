@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 
 /**
  * Regex matching any agent-mesh hook script invocation (including legacy names).
@@ -313,16 +313,13 @@ ${popupText}
         } catch {}
       `;
       const encoded = Buffer.from(psScript, "utf16le").toString("base64");
-      const child = spawn(
-        "powershell.exe",
-        ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-        {
-          detached: true,
-          stdio: "ignore",
-          windowsHide: false,
-        }
-      );
-      child.unref?.();
+      // ponytail: detached:true makes powershell silently no-op and plain children die with the
+        // parent; `cmd /c start` + spawnSync (returns in ms) is the combo that survives hook exit.
+        spawnSync(
+          "cmd.exe",
+          ["/c", "start", "", "/min", "powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+          { stdio: "ignore", windowsHide: true }
+        );
     } catch {}
   }
 }

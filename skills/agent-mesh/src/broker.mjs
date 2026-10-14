@@ -708,16 +708,12 @@ ${popupText}
           } catch {}
         `;
         const encoded = Buffer.from(psScript, "utf16le").toString("base64");
-        const child = spawn(
+        // ponytail: broker is long-lived, so a plain async child survives; detached:true makes powershell no-op.
+        spawn(
           "powershell.exe",
           ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-          {
-            detached: true,
-            stdio: "ignore",
-            windowsHide: false,
-          }
-        );
-        child.unref?.();
+          { stdio: "ignore", windowsHide: true }
+        ).on("error", () => {});
       } catch {}
     });
   }
