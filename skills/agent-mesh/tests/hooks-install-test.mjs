@@ -173,8 +173,13 @@ test("Lifecycle Hook Installer & Uninstaller Suite", async (t) => {
       const data = JSON.parse(readFileSync(hooksJsonPath, "utf8"));
       assert.ok(data["user-linter"], "Foreign named block must be preserved");
       assert.ok(data["agent-mesh-presence"], "agent-mesh-presence block must be present");
+      assert.equal(data["agent-mesh-presence"].SessionStart.length, 1);
       assert.equal(data["agent-mesh-presence"].PreInvocation.length, 1);
       assert.equal(data["agent-mesh-presence"].Stop.length, 1);
+      assert.match(
+        data["agent-mesh-presence"].SessionStart[0].command,
+        /node "D:\/mesh\/agy-presence-hook\.mjs".*--event SessionStart/
+      );
       assert.match(
         data["agent-mesh-presence"].Stop[0].command,
         /node "D:\/mesh\/agy-presence-hook\.mjs".*--event Stop/

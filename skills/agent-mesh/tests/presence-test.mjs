@@ -267,5 +267,41 @@ describe("Session Discovery & Lifecycle Presence Suite", () => {
     });
     assert.equal(emptyStop.status, 0);
     assert.equal(emptyStop.stdout.trim(), "", "Stop hook with no waiting messages must print nothing");
+
+    // 5. SessionEnd: cleans up session and marks closed in broker
+    const endProc = await runChild(process.execPath, [hookScript], {
+      cwd: testRepo,
+      env: { ...process.env, MESH_IPC_ADDRESS: ipcAddr },
+      input: JSON.stringify({
+        session_id: "presence-hook-session-3333",
+        hook_event_name: "SessionEnd",
+        cwd: testRepo,
+      }),
+    });
+    assert.equal(endProc.status, 0);
+
+    const afterEndStatus = await sendIpcRequest(ipcAddr, { action: "status" });
+    const endedSess = afterEndStatus.liveSessions.find((s) => s.session_id === "presence-hook-session-3333");
+    assert.equal(endedSess, undefined, "Ended session must not be present in liveSessions");
+  });
+
+  test("6. Codex harness presence: registers and announces under codex harness name", async () => {
+    const hookScript = join(import.meta.dirname, "../src/hooks/presence-hook.mjs");
+
+    const codexStart = await runChild(process.execPath, [hookScript, "--harness", "codex", "--event", "SessionStart"], {
+      cwd: testRepo,
+      env: { ...process.env, MESH_IPC_ADDRESS: ipcAddr },
+      input: JSON.stringify({
+        session_id: "codex-test-session-5555",
+        cwd: testRepo,
+      }),
+    });
+    assert.equal(codexStart.status, 0);
+
+    const status = await sendIpcRequest(ipcAddr, { action: "status" });
+    const codexSess = status.liveSessions.find((s) => s.session_id === "codex-test-session-5555");
+    assert.ok(codexSess, "Codex session must be registered");
+    assert.equal(codexSess.harness, "codex");
+    assert.equal(codexSess.state, "idle");
   });
 });

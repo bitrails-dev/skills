@@ -15,6 +15,7 @@ import {
   emitJson,
   resolveTrueHarnessPid,
   appendHookAuditLog,
+  notifyHookPresence,
   getMeshHome,
 } from "./common.mjs";
 
@@ -31,8 +32,20 @@ async function main() {
     input = await readStdinJson();
   } catch {}
 
-  const eventName = input.hook_event_name || (input.stop_hook_active !== undefined ? "Stop" : "SessionStart");
-  const sessionId = input.session_id;
+  const eventArgIdx = process.argv.indexOf("--event");
+  const eventName =
+    (eventArgIdx !== -1 && process.argv[eventArgIdx + 1]) ||
+    input.hook_event_name ||
+    input.event ||
+    (input.stop_hook_active !== undefined ? "Stop" : "SessionStart");
+
+  const sessionId =
+    input.session_id ||
+    input.sessionId ||
+    input.conversationId ||
+    process.env.CLAUDE_CODE_SESSION_ID ||
+    process.env.SESSION_ID ||
+    null;
 
   // Headless guard: if invoked from within a mesh headless turn, exit cleanly
   if (process.env.MESH_AGENT) {
@@ -87,6 +100,14 @@ async function main() {
       } catch (e) {
         err = e.message;
       }
+
+      notifyHookPresence({
+        harness,
+        event: "SessionStart",
+        state: "start",
+        sessionId,
+        pid,
+      });
 
       appendHookAuditLog({
         harness,
@@ -172,6 +193,14 @@ async function main() {
             payload: { ids: res.messages.map((m) => m.id) },
           }, 0, { timeoutMs: 800 }).catch(() => {});
 
+          notifyHookPresence({
+            harness,
+            event: "InboxMessage",
+            state: "received",
+            sessionId,
+            pid,
+          });
+
           appendHookAuditLog({
             harness,
             event: "Stop",
@@ -227,7 +256,7 @@ async function main() {
       await sendIpcRequest(address, {
         action: "session_event",
         payload: { harness, sessionId, event: "end", pid, cwd },
-      }, 0, { timeoutMs: 600 }).catch(() => {});
+      }, 0, { timeoutMs: 150 }).catch(() => {});
 
       // Clean up session pid cache and lock files
       try {
@@ -236,6 +265,14 @@ async function main() {
       try {
         unlinkSync(lockFile);
       } catch {}
+
+      notifyHookPresence({
+        harness,
+        event: "SessionEnd",
+        state: "end",
+        sessionId,
+        pid,
+      });
 
       appendHookAuditLog({
         harness,

@@ -17,6 +17,7 @@ import {
   emitJson,
   resolveTrueHarnessPid,
   appendHookAuditLog,
+  notifyHookPresence,
 } from "./common.mjs";
 
 async function main() {
@@ -36,29 +37,41 @@ async function main() {
     const eventArgIdx = process.argv.indexOf("--event");
     if (eventArgIdx !== -1 && process.argv[eventArgIdx + 1]) {
       const explicit = process.argv[eventArgIdx + 1].toLowerCase();
-      phase = explicit.includes("pre") ? "PreInvocation" : "Stop";
+      if (explicit.includes("start")) {
+        phase = "SessionStart";
+      } else if (explicit.includes("pre")) {
+        phase = "PreInvocation";
+      } else {
+        phase = "Stop";
+      }
+    } else if (process.argv.some((a) => a.toLowerCase().includes("sessionstart"))) {
+      phase = "SessionStart";
     } else if (process.argv.includes("pre") || process.argv.includes("PreInvocation")) {
       phase = "PreInvocation";
     } else if (process.argv.includes("stop") || process.argv.includes("Stop")) {
       phase = "Stop";
     } else {
       const eventName = input.event || input.hook_event_name || input.hookName;
-      if (eventName === "PreInvocation" || (input.invocationNum !== undefined && input.decision === undefined)) {
+      if (eventName === "SessionStart") {
+        phase = "SessionStart";
+      } else if (eventName === "PreInvocation" || (input.invocationNum !== undefined && input.decision === undefined)) {
         phase = "PreInvocation";
       } else {
         phase = "Stop";
       }
     }
 
-    // Headless guard: if invoked inside a mesh-driven headless turn, exit with allow
+    const isStartOrPre = phase === "SessionStart" || phase === "PreInvocation";
+
+    // Headless guard: if invoked inside a mesh-driven headless turn, exit with safe defaults
     if (process.env.MESH_AGENT) {
-      await emitJson(phase === "PreInvocation" ? {} : { decision: "allow" });
+      await emitJson(isStartOrPre ? {} : { decision: "allow" });
       process.exit(0);
     }
 
     const sessionId = input.conversationId;
     if (!sessionId) {
-      await emitJson(phase === "PreInvocation" ? {} : { decision: "allow" });
+      await emitJson(isStartOrPre ? {} : { decision: "allow" });
       process.exit(0);
     }
 
@@ -76,6 +89,57 @@ async function main() {
 
     const address = resolveIpcAddress(cwd);
     const pid = resolveTrueHarnessPid(sessionId, { harness: "antigravity", event: phase });
+
+    if (phase === "SessionStart") {
+      let reqOk = false;
+      let reqErr = null;
+      try {
+        const res = await sendIpcRequest(
+          address,
+          {
+            action: "session_event",
+            payload: {
+              harness: "antigravity",
+              sessionId,
+              event: "start",
+              pid,
+              cwd,
+              origin: "interactive",
+            },
+          },
+          0,
+          { timeoutMs: 800 }
+        );
+        reqOk = res?.ok ?? false;
+      } catch (err) {
+        reqErr = err.message;
+      }
+
+      notifyHookPresence({
+        harness: "antigravity",
+        event: "SessionStart",
+        state: "start",
+        sessionId,
+        pid,
+      });
+
+      appendHookAuditLog({
+        harness: "antigravity",
+        event: "SessionStart",
+        state: "start",
+        sessionId,
+        pid,
+        address,
+        cwd,
+        ok: reqOk,
+        error: reqErr,
+        durationMs: Date.now() - startTime,
+      });
+
+      // SessionStart expects a JSON object on stdout (e.g. {})
+      await emitJson({});
+      process.exit(0);
+    }
 
     if (phase === "PreInvocation") {
       let reqOk = false;
@@ -160,6 +224,14 @@ async function main() {
         { timeoutMs: 800 }
       ).catch(() => {});
 
+      notifyHookPresence({
+        harness: "antigravity",
+        event: "InboxMessage",
+        state: "received",
+        sessionId,
+        pid,
+      });
+
       appendHookAuditLog({
         harness: "antigravity",
         event: "Stop",
@@ -215,7 +287,7 @@ async function main() {
       durationMs: Date.now() - startTime,
     });
     // Top-level catch-all: guarantees valid JSON is ALWAYS emitted on stdout
-    await emitJson(phase === "PreInvocation" ? {} : { decision: "allow" });
+    await emitJson((phase === "SessionStart" || phase === "PreInvocation") ? {} : { decision: "allow" });
   }
 
   process.exit(0);

@@ -8,6 +8,7 @@
 import { existsSync, writeFileSync, unlinkSync, appendFileSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { spawn } from "node:child_process";
 import { initDatabase, MeshRepository } from "./db.mjs";
 import { getIpcAddress, startIpcServer } from "./ipc.mjs";
 import { createClaudeDriver } from "./drivers/claude.mjs";
@@ -252,6 +253,15 @@ export class AgentMeshBroker {
           }
         }
 
+        // Notify desktop asynchronously of session lifecycle events
+        this.notifyDesktop({
+          harness: resolvedHarness,
+          event,
+          state: res.state,
+          sessionId,
+          pid: Number(pid) || null,
+        });
+
         return { ok: true, state: res.state };
       }
 
@@ -298,6 +308,15 @@ export class AgentMeshBroker {
         const targetAgent = this.resolveAgent(req.payload.agent);
         const sessionId = req.payload.sessionId || null;
         const messages = this.repo.claimMessagesForAgent(targetAgent, sessionId);
+        if (messages.length > 0) {
+          this.notifyDesktop({
+            harness: targetAgent,
+            event: "inbox",
+            state: `${messages.length} msg`,
+            sessionId,
+            pid: null,
+          });
+        }
         return { ok: true, messages };
       }
 
@@ -370,18 +389,27 @@ export class AgentMeshBroker {
     // 1. Check all live sessions with a recorded PID
     try {
       const live = this.repo.listLiveSessions();
+      const now = Date.now();
       for (const sess of live) {
-        if (sess.pid && !isProcessAlive(sess.pid)) {
-          if (sess.origin === "interactive") {
-            this.repo.updateSessionState(sess.session_id, "closed", null);
-          } else if (sess.state === "human-held") {
-            this.repo.updateSessionState(sess.session_id, "idle", null);
+        if (sess.pid) {
+          if (!isProcessAlive(sess.pid)) {
+            if (sess.origin === "interactive") {
+              this.repo.updateSessionState(sess.session_id, "closed", null);
+            } else if (sess.state === "human-held") {
+              this.repo.updateSessionState(sess.session_id, "idle", null);
+            }
+          } else if (sess.state === "busy" && sess.updated_at && now - sess.updated_at > 10 * 60 * 1000) {
+            // Stale busy session sweep (skip if currently executing an in-flight headless turn)
+            const isInFlight = Array.from(this.activeTurns.values()).some((ctrl) => ctrl.sessionId === sess.session_id);
+            if (!isInFlight) {
+              this.repo.updateSessionState(sess.session_id, "idle", null);
+            }
           }
-        } else if (sess.state === "busy" && sess.updated_at && Date.now() - sess.updated_at > 10 * 60 * 1000) {
-          // Stale busy session sweep (skip if currently executing an in-flight headless turn)
-          const isInFlight = Array.from(this.activeTurns.values()).some((ctrl) => ctrl.sessionId === sess.session_id);
-          if (!isInFlight) {
-            this.repo.updateSessionState(sess.session_id, "idle", null);
+        } else if (sess.origin === "interactive") {
+          // Untracked or asynchronously-resolved sessions without a verified OS PID:
+          // Keep active and rely on inactivity TTL (60 min) rather than premature reaping
+          if (sess.updated_at && now - sess.updated_at > 60 * 60 * 1000) {
+            this.repo.updateSessionState(sess.session_id, "closed", null);
           }
         }
       }
@@ -604,6 +632,70 @@ Process the message(s) above, take appropriate action, and reply via the CLI.`;
         this.activeTurns.delete(agentId);
       }
     }
+  }
+
+  /**
+   * Dispatches an asynchronous Windows desktop audio chime and auto-dismissing toast popup.
+   * Runs in background via setImmediate to guarantee zero impact on IPC latency.
+   * Uses PowerShell with -EncodedCommand for 100% quote-safety and reliable execution.
+   *
+   * @param {object} params
+   * @param {string} params.harness
+   * @param {string} params.event
+   * @param {string} [params.state]
+   * @param {string} [params.sessionId]
+   * @param {number|null} [params.pid]
+   */
+  notifyDesktop({ harness, event, state, sessionId, pid }) {
+    if (process.env.MESH_SILENT === "1") return;
+    if (process.platform !== "win32") return;
+
+    // Filter to session lifecycle transitions and inbox message arrival to avoid notification spam
+    const notifyEvents = new Set(["start", "end", "SessionStart", "SessionEnd", "inbox"]);
+    if (!notifyEvents.has(event)) return;
+
+    setImmediate(() => {
+      try {
+        const harnessUpper = String(harness || "unknown").toUpperCase();
+        const sidShort = sessionId ? `${String(sessionId).slice(0, 8)}…` : "no-session";
+        const stateStr = state ? ` (${state})` : "";
+        const pidStr = pid ? ` [PID: ${pid}]` : "";
+        const actionLabel =
+          event === "start" || event === "SessionStart"
+            ? "Session Started"
+            : event === "end" || event === "SessionEnd"
+            ? "Session Ended"
+            : event === "inbox"
+            ? "New Message"
+            : event;
+        const popupText = `[Agent Mesh] ${harnessUpper} ${actionLabel}${stateStr}\nSession: ${sidShort}${pidStr}`;
+
+        const psScript = `
+          try {
+            $sound = 'C:\\Windows\\Media\\Windows Notify System Generic.wav';
+            if (Test-Path $sound) {
+              (New-Object System.Media.SoundPlayer $sound).Play();
+            } else {
+              [System.Media.SystemSounds]::Asterisk.Play();
+            }
+            (New-Object -ComObject Wscript.Shell).Popup(@"
+${popupText}
+"@, 2, 'Agent Mesh Presence', 64);
+          } catch {}
+        `;
+        const encoded = Buffer.from(psScript, "utf16le").toString("base64");
+        const child = spawn(
+          "powershell.exe",
+          ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+          {
+            detached: true,
+            stdio: "ignore",
+            windowsHide: false,
+          }
+        );
+        child.unref?.();
+      } catch {}
+    });
   }
 
   /**

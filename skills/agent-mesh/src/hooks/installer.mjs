@@ -240,12 +240,20 @@ export function installAgyHooks(hooksJsonPath, scriptAbsPath) {
   }
 
   const data = read.data;
+  const startCommand = buildHookCommand(scriptAbsPath, ["--event", "SessionStart"]);
   const preCommand = buildHookCommand(scriptAbsPath, ["--event", "PreInvocation"]);
   const stopCommand = buildHookCommand(scriptAbsPath, ["--event", "Stop"]);
 
   backupOnce(hooksJsonPath);
 
   data["agent-mesh-presence"] = {
+    SessionStart: [
+      {
+        type: "command",
+        command: startCommand,
+        timeout: 10,
+      },
+    ],
     PreInvocation: [
       {
         type: "command",

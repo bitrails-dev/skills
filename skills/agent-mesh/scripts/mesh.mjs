@@ -94,16 +94,20 @@ const ipcAddress = resolveIpcAddress(rootDir);
 function runHooksWatcher(watcherArgs) {
   const logPath = join(homedir(), ".agent-mesh", "logs", "hooks.log");
   const noBell = watcherArgs.includes("--no-bell");
-  const enableSound = watcherArgs.includes("--sound") || watcherArgs.includes("--notify") || process.env.MESH_NOTIFY === "1" || process.env.MESH_NOTIFY_SOUND === "1";
-  const enablePopup = watcherArgs.includes("--popup") || watcherArgs.includes("--notify") || process.env.MESH_NOTIFY_POPUP === "1";
+  const enableSound =
+    !watcherArgs.includes("--no-sound") &&
+    (watcherArgs.includes("--sound") || watcherArgs.includes("--notify") || process.env.MESH_NOTIFY === "1" || process.env.MESH_NOTIFY_SOUND === "1" || process.platform === "win32");
+  const enablePopup =
+    !watcherArgs.includes("--no-popup") &&
+    (watcherArgs.includes("--popup") || watcherArgs.includes("--notify") || process.env.MESH_NOTIFY === "1" || process.env.MESH_NOTIFY_POPUP === "1" || process.platform === "win32");
 
   console.log(`\n======================================================`);
   console.log(`       AGENT MESH HOOKS REAL-TIME EVENT WATCHER       `);
   console.log(`======================================================`);
   console.log(`Log File:      ${logPath}`);
   console.log(`Terminal Bell: ${noBell ? "Disabled (--no-bell)" : "Enabled (\\x07 for VPS/terminal)"}`);
-  console.log(`Audio Chime:   ${enableSound ? "Enabled (Windows chime)" : "Disabled (use --sound or --notify)"}`);
-  console.log(`Desktop Popup: ${enablePopup ? "Enabled (Windows popup)" : "Disabled (use --popup or --notify)"}`);
+  console.log(`Audio Chime:   ${enableSound ? "Enabled (Windows chime)" : "Disabled (use --no-sound to disable)"}`);
+  console.log(`Desktop Popup: ${enablePopup ? "Enabled (Windows popup)" : "Disabled (use --no-popup to disable)"}`);
   console.log(`Status:        Listening for live hook triggers... (Ctrl+C to quit)\n`);
 
   function formatHookLine(rawLine, shouldNotify = true) {
@@ -129,18 +133,36 @@ function runHooksWatcher(watcherArgs) {
         }
 
         if (enableSound && process.platform === "win32") {
-          spawnChild("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "[System.Media.SystemSounds]::Asterisk.Play()"], {
+          const psSound = `
+            try {
+              $sound = 'C:\\Windows\\Media\\Windows Notify System Generic.wav';
+              if (Test-Path $sound) {
+                (New-Object System.Media.SoundPlayer $sound).Play();
+              } else {
+                [System.Media.SystemSounds]::Asterisk.Play();
+              }
+            } catch {}
+          `;
+          const encodedSound = Buffer.from(psSound, "utf16le").toString("base64");
+          spawnChild("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", encodedSound], {
             stdio: "ignore",
-            windowsHide: true,
+            windowsHide: false,
           });
         }
 
         if (enablePopup && process.platform === "win32") {
-          const popupMsg = `Harness: ${harness}\nEvent: ${event}${state}\nSession: ${sid}\n${pid}`;
-          spawnChild("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "(New-Object -ComObject Wscript.Shell).Popup($env:MESH_POPUP_MSG, 2, 'Agent Mesh Hook Triggered', 64)"], {
+          const popupMsg = `[Agent Mesh] ${harness} ${event}${state}\nSession: ${sid}\n${pid}`;
+          const psPopup = `
+            try {
+              (New-Object -ComObject Wscript.Shell).Popup(@"
+${popupMsg}
+"@, 2, 'Agent Mesh Hook Triggered', 64);
+            } catch {}
+          `;
+          const encodedPopup = Buffer.from(psPopup, "utf16le").toString("base64");
+          spawnChild("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", encodedPopup], {
             stdio: "ignore",
-            windowsHide: true,
-            env: { ...process.env, MESH_POPUP_MSG: popupMsg },
+            windowsHide: false,
           });
         }
       }

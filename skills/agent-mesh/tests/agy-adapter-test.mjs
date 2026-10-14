@@ -56,6 +56,27 @@ test("Antigravity (agy) Presence Hook Adapter Suite", async (t) => {
   const conversationId = "conv-agy-uuid-1234";
 
   try {
+    await t.test("0. SessionStart registers start session with broker and emits {}", async () => {
+      const res = await runAgyHook(
+        {
+          conversationId,
+          workspacePaths: [tmpDir],
+          event: "SessionStart",
+        },
+        { MESH_IPC_ADDRESS: broker.ipcAddress }
+      );
+
+      assert.equal(res.exitCode, 0);
+      assert.deepEqual(res.json, {});
+
+      // Verify broker session state
+      const statusRes = await sendIpcRequest(broker.ipcAddress, { action: "status" });
+      const agySess = (statusRes.liveSessions || []).find((s) => s.session_id === conversationId);
+      assert.ok(agySess, "Session must be registered with broker on SessionStart");
+      assert.equal(agySess.harness, "antigravity");
+      assert.equal(agySess.state, "idle");
+    });
+
     await t.test("1. PreInvocation payload emits {} and registers busy session with broker", async () => {
       const res = await runAgyHook(
         {

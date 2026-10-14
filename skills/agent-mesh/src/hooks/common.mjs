@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 
 /**
  * Regex matching any agent-mesh hook script invocation (including legacy names).
@@ -196,35 +196,42 @@ export function resolveTrueHarnessPid(sessionId, options = {}) {
 
   let resolvedPid = directPid;
 
-  // 4. Windows wrapper shell ascent (primarily for Antigravity where cmd.exe wraps the invocation)
+  // 4. Windows wrapper shell handling (primarily for Antigravity where cmd.exe wraps the invocation)
   if (process.platform === "win32") {
-    try {
-      const script = `
-        $shells = @('cmd.exe', 'powershell.exe', 'pwsh.exe', 'bash.exe', 'sh.exe', 'conhost.exe');
-        $p = Get-CimInstance Win32_Process -Filter "ProcessId = ${directPid}";
-        while ($p -and ($p.Name.ToLower() -in $shells) -and $p.ParentProcessId) {
-          $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $($p.ParentProcessId)";
-          if (-not $parent) { break }
-          $p = $parent;
-        }
-        if ($p) { $p.ProcessId } else { ${directPid} }
-      `;
-      const out = execFileSync(
-        "powershell.exe",
-        ["-NoProfile", "-NonInteractive", "-Command", script],
-        {
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "ignore"],
-          timeout: 1200,
-        }
-      ).trim();
-      const nonShellAncestor = Number(out);
-      if (nonShellAncestor && isProcessAlive(nonShellAncestor)) {
-        resolvedPid = nonShellAncestor;
-      }
-    } catch {}
+    if (harness === "antigravity") {
+      // NEVER block hook on synchronous PowerShell/WMI crawling (which takes 6.5s on Windows).
+      // Return null synchronously so the hook finishes in < 15ms and the session is NOT prematurely reaped.
+      // Launch an unreferenced detached background worker to asynchronously resolve agy.exe and populate the PID cache.
+      try {
+        const resolveScript = `
+          try {
+            $shells = @('cmd.exe', 'powershell.exe', 'pwsh.exe', 'conhost.exe');
+            $p = Get-CimInstance Win32_Process -Filter "ProcessId = ${directPid}";
+            while ($p -and ($p.Name.ToLower() -in $shells) -and $p.ParentProcessId) {
+              $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $($p.ParentProcessId)";
+              if (-not $parent) { break }
+              $p = $parent;
+            }
+            if ($p -and $p.ProcessId) {
+              Set-Content -Path '${pidFile.replace(/\\/g, "/")}' -Value $p.ProcessId -Encoding ASCII;
+            }
+          } catch {}
+        `;
+        const worker = spawn(
+          "powershell.exe",
+          ["-NoProfile", "-NonInteractive", "-Command", resolveScript],
+          {
+            detached: true,
+            stdio: "ignore",
+            windowsHide: true,
+          }
+        );
+        worker.unref?.();
+      } catch {}
+      return null;
+    }
   } else {
-    // POSIX / Linux: Walk up /proc/<pid>/stat field 4, skipping shells
+    // POSIX / Linux: Walk up /proc/<pid>/stat field 4, skipping shells (< 2ms)
     try {
       const shells = new Set(["sh", "bash", "dash", "zsh", "fish"]);
       let curr = directPid;
@@ -240,18 +247,84 @@ export function resolveTrueHarnessPid(sessionId, options = {}) {
         if (!shells.has(comm)) break;
       }
       if (curr && isProcessAlive(curr)) {
-        resolvedPid = curr;
+        try {
+          mkdirSync(pidsDir, { recursive: true });
+          writeFileSync(pidFile, String(curr), "utf8");
+        } catch {}
+        return curr;
       }
     } catch {}
   }
 
-  // 5. Cache resolved PID
+  // 5. Cache fallback directPid
+  if (directPid) {
+    try {
+      mkdirSync(pidsDir, { recursive: true });
+      writeFileSync(pidFile, String(directPid), "utf8");
+    } catch {}
+  }
+
+  return directPid;
+}
+
+/**
+ * Direct, non-blocking notification for lifecycle hook events.
+ * Provides immediate auditory and visual feedback on session lifecycle transitions:
+ * - Windows: Plays audio chime ([System.Media.SystemSounds]::Asterisk.Play()) and shows
+ *   an auto-dismissing (2-second) desktop popup via a detached unreferenced process (~18ms).
+ * - POSIX / Headless VPS: Writes ASCII bell (\x07) to process.stderr (0ms, terminal audio alert).
+ * - Appends to ~/.agent-mesh/logs/hooks.log for the live CLI watcher (`mesh hooks watch`).
+ *
+ * @param {object} params
+ * @param {string} params.harness - Name of the harness (claude, antigravity, codex, etc.)
+ * @param {string} params.event - Hook lifecycle event name (SessionStart, Stop, SessionEnd)
+ * @param {string} [params.state] - State descriptor (start, busy, idle, continue, block, end)
+ * @param {string} [params.sessionId] - Active session identifier
+ * @param {number|null} [params.pid] - Harness process ID
+ */
+export function notifyHookPresence({ harness, event, state, sessionId, pid }) {
+  if (process.env.MESH_SILENT === "1") return;
+
+  const harnessUpper = String(harness || "unknown").toUpperCase();
+  const sidShort = sessionId ? `${String(sessionId).slice(0, 8)}…` : "no-session";
+  const stateStr = state ? ` (${state})` : "";
+  const pidStr = pid ? ` [PID: ${pid}]` : "";
+
+  // 1. Headless terminal bell on stderr (does not corrupt JSON stdout)
   try {
-    mkdirSync(pidsDir, { recursive: true });
-    writeFileSync(pidFile, String(resolvedPid), "utf8");
+    process.stderr.write("\x07");
   } catch {}
 
-  return resolvedPid;
+  // 2. Windows audio chime and auto-dismissing popup using quote-safe -EncodedCommand
+  if (process.platform === "win32") {
+    try {
+      const popupText = `[Agent Mesh] ${harnessUpper} ${event}${stateStr}\nSession: ${sidShort}${pidStr}`;
+      const psScript = `
+        try {
+          $sound = 'C:\\Windows\\Media\\Windows Notify System Generic.wav';
+          if (Test-Path $sound) {
+            (New-Object System.Media.SoundPlayer $sound).Play();
+          } else {
+            [System.Media.SystemSounds]::Asterisk.Play();
+          }
+          (New-Object -ComObject Wscript.Shell).Popup(@"
+${popupText}
+"@, 2, 'Agent Mesh Presence', 64);
+        } catch {}
+      `;
+      const encoded = Buffer.from(psScript, "utf16le").toString("base64");
+      const child = spawn(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+        {
+          detached: true,
+          stdio: "ignore",
+          windowsHide: false,
+        }
+      );
+      child.unref?.();
+    } catch {}
+  }
 }
 
 /**
