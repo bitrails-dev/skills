@@ -6,7 +6,8 @@
  * - session.created:  announces the real session id (supersedes the load-time placeholder)
  * - session.status busy / message.updated: announces busy
  * - session.idle:     claims pending inbox messages and marks the session idle
- * - session.deleted:  announces end
+ * - session.updated:  announces a rename when the title changes
+ * - session.deleted / server.instance.disposed: announces end (the latter is the shutdown signal)
  * Process exit is covered by the broker's PID watcher.
  */
 
@@ -14,15 +15,17 @@ import { resolveIpcAddress, sendIpcRequest } from "../ipc.mjs";
 
 let loaded = false; // OpenCode invokes every exported function; register once per process
 let currentSession = `opencode-${process.pid}`;
+let currentName = null;
 
 const send = (address, action, payload) =>
-  sendIpcRequest(address, { action, payload }, 0).catch(() => null);
+  sendIpcRequest(address, { action, payload }, 0, { timeoutMs: 800 }).catch(() => null);
 
 async function announce(event, sessionId, cwd, name) {
   // Headless guard: if invoked inside a mesh headless turn, avoid duplicate presence cycles
   if (process.env.MESH_AGENT) return;
   const id = sessionId || currentSession;
   currentSession = id;
+  if (name) currentName = name;
   await send(resolveIpcAddress(process.cwd()), "session_event", {
     harness: "opencode",
     sessionId: id,
@@ -30,7 +33,7 @@ async function announce(event, sessionId, cwd, name) {
     pid: process.pid,
     cwd: cwd || process.cwd(),
     origin: "interactive",
-    name: name || undefined,
+    name: name || currentName || undefined,
     notify: event === "start" || event === "end", // plugins have no hook-side toast
   });
 }
@@ -68,6 +71,8 @@ export default async function opencodePresencePlugin(ctx = {}) {
           return onIdle(p.sessionID);
         case "session.deleted":
           return announce("end", p.info?.id);
+        case "server.instance.disposed":
+          return announce("end", currentSession);
       }
     },
   };

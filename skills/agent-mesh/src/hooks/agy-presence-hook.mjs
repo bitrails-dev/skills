@@ -18,6 +18,7 @@ import {
   resolveTrueHarnessPid,
   appendHookAuditLog,
   notifyHookPresence,
+  resolveSessionName,
 } from "./common.mjs";
 
 async function main() {
@@ -95,6 +96,7 @@ async function main() {
 
     const address = resolveIpcAddress(cwd);
     const pid = resolveTrueHarnessPid(sessionId, { harness: "antigravity", event: phase });
+    const name = resolveSessionName("antigravity", sessionId);
 
     if (phase === "SessionStart") {
       let reqOk = false;
@@ -111,6 +113,7 @@ async function main() {
               pid,
               cwd,
               origin: "interactive",
+              name,
             },
           },
           0,
@@ -162,6 +165,7 @@ async function main() {
               pid,
               cwd,
               origin: "interactive",
+              name,
             },
           },
           0,
@@ -258,7 +262,7 @@ async function main() {
           address,
           {
             action: "session_event",
-            payload: { harness: "antigravity", sessionId, event: "idle", pid, cwd },
+            payload: { harness: "antigravity", sessionId, event: "idle", pid, cwd, name },
           },
           0,
           { timeoutMs: 800 }

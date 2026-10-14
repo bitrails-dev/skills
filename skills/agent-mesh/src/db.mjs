@@ -299,7 +299,10 @@ export class MeshRepository {
       : null;
     const prevName = prevRow?.name ?? null;
     // "rename" is a pure metadata event: keep the current state
-    if (event === "rename") state = prevRow?.state || "idle";
+    if (event === "rename") {
+      if (!prevRow) return { ok: true, state: "unknown", renamed: null }; // never register a phantom session
+      state = prevRow.state || "idle";
+    }
 
     // Supersede older rows for this (harness, pid) if sessionId changed (e.g. /clear)
     if (pid && sessionId) {

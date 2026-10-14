@@ -20,7 +20,7 @@ import { createAcpDriver } from "./drivers/acp.mjs";
 import { ensureAgentWorktree } from "./worktree.mjs";
 import { VERSION } from "./version.mjs";
 import { toastArgs } from "./notify.mjs";
-import { resolveSessionName } from "./hooks/common.mjs";
+import { resolveSessionName, readCodexThread } from "./hooks/common.mjs";
 
 /**
  * Safe process liveness check.
@@ -69,6 +69,7 @@ export class AgentMeshBroker {
     this.drivers = new Map();
     this.busyAgents = new Set();
     this.activeTurns = new Map(); // agentId -> AbortController
+    this.lastExternalPoll = 0;
     this.transcripts = new Map(); // sessionId -> { harness, path, mtime } for /rename detection
     this.turnRetries = new Map(); // agentId -> consecutive failed turns
     this.messageRetries = new Map(); // ticketId -> retry attempts
@@ -157,6 +158,7 @@ export class AgentMeshBroker {
     this.pidWatchTimer = setInterval(() => {
       this.reapStaleLeases();
       this.watchSessionNames();
+      if (Date.now() - this.lastExternalPoll >= 5000) this.watchExternalSessions();
     }, 2000);
     this.pidWatchTimer.unref?.();
 
@@ -440,6 +442,48 @@ export class AgentMeshBroker {
         }
       } catch {}
     }
+  }
+
+  /**
+   * Polls harness-owned state (read-only) for live sessions every ~5s: Antigravity conversation titles
+   * and Codex thread names/activity. Codex hooks run in the shared app-server (no PID), and its control
+   * socket is not reachable by outside clients, so state_5.sqlite is the transport.
+   */
+  watchExternalSessions() {
+    this.lastExternalPoll = Date.now();
+    try {
+      for (const sess of this.repo.listLiveSessions()) {
+        if (sess.harness !== "antigravity" && sess.harness !== "codex") continue;
+        let name = null;
+        if (sess.harness === "codex") {
+          const t = readCodexThread(sess.session_id);
+          if (t?.archived) {
+            this.repo.updateSessionState(sess.session_id, "closed", null);
+            this.notifyDesktop({ harness: sess.harness, event: "killed", state: "thread archived", sessionId: sess.session_id, pid: null });
+            continue;
+          }
+          // Thread activity the hooks did not see: keep the no-PID inactivity TTL from closing a live session
+          const ts = Number(t?.updated_at_ms) || (Number(t?.updated_at) || 0) * 1000;
+          if (ts > (sess.updated_at || 0) && ts <= Date.now() + 60000) {
+            this.repo.updateSessionState(sess.session_id, sess.state, sess.lease_holder ?? null);
+          }
+          name = resolveSessionName("codex", sess.session_id);
+        } else {
+          name = resolveSessionName("antigravity", sess.session_id);
+        }
+        if (!name) continue;
+        const renamed = this.repo.setSessionName(sess.session_id, name);
+        if (renamed) {
+          this.notifyDesktop({
+            harness: sess.harness,
+            event: "renamed",
+            state: `${renamed.from ? `"${renamed.from}" -> ` : ""}"${renamed.to}"`,
+            sessionId: sess.session_id,
+            pid: null,
+          });
+        }
+      }
+    } catch {}
   }
 
   /**

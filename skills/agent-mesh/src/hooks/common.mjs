@@ -13,7 +13,55 @@ import {
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { toastArgs } from "../notify.mjs";
+
+const nodeRequire = createRequire(import.meta.url);
+
+/** Antigravity conversation summaries DB (MESH_AGY_DB overrides, used by tests). */
+export const agyDbPath = () =>
+  process.env.MESH_AGY_DB || join(homedir(), ".gemini", "antigravity-cli", "conversation_summaries.db");
+
+/** Codex thread state DB (MESH_CODEX_DB overrides, used by tests). */
+export const codexDbPath = () => process.env.MESH_CODEX_DB || join(homedir(), ".codex", "state_5.sqlite");
+
+/**
+ * One-shot read-only sqlite query. Returns the first row, or null when the file/row/schema is missing.
+ * node:sqlite is required lazily so hooks that never need it skip the experimental-feature warning.
+ */
+export function readSqliteRow(path, sql, ...args) {
+  let db;
+  try {
+    if (!existsSync(path)) return null;
+    const { DatabaseSync } = nodeRequire("node:sqlite");
+    db = new DatabaseSync(path, { readOnly: true });
+    return db.prepare(sql).get(...args) || null;
+  } catch {
+    return null;
+  } finally {
+    try { db?.close(); } catch {}
+  }
+}
+
+/** Antigravity conversation row (title falls back to preview), or null. */
+export function readAgyConversation(conversationId) {
+  const r = readSqliteRow(
+    agyDbPath(),
+    "SELECT title, preview, status, last_modified_time FROM conversation_summaries WHERE conversation_id = ?",
+    conversationId
+  );
+  return r ? { ...r, name: r.title || r.preview || null } : null;
+}
+
+/** Codex thread row from state_5.sqlite (name column, then title), or null. */
+export function readCodexThread(threadId) {
+  const r = readSqliteRow(
+    codexDbPath(),
+    "SELECT name, title, updated_at_ms, updated_at, archived FROM threads WHERE id = ?",
+    threadId
+  );
+  return r ? { ...r, name: r.name || r.title || null } : null;
+}
 
 /**
  * Regex matching any agent-mesh hook script invocation (including legacy names).
@@ -194,6 +242,7 @@ export function resolveSessionName(harness, sessionId, input = {}) {
       }
       return custom || ai || null;
     }
+    if (harness === "antigravity") return readAgyConversation(sessionId)?.name || null;
     if (harness === "codex") {
       const idx = join(homedir(), ".codex", "session_index.jsonl");
       if (!existsSync(idx)) return null;
@@ -201,7 +250,7 @@ export function resolveSessionName(harness, sessionId, input = {}) {
       for (const line of tail(idx, 256 * 1024).split("\n")) {
         if (line.includes(sessionId)) name = JSON.parse(line).thread_name || name;
       }
-      return name;
+      return name || readCodexThread(sessionId)?.name || null;
     }
   } catch {}
   return null;
