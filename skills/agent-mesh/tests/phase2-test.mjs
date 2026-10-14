@@ -15,6 +15,9 @@ import { sendIpcRequest } from "../src/ipc.mjs";
 import { ensureAgentWorktree, removeAgentWorktree } from "../src/worktree.mjs";
 import { createOpenCodeDriver } from "../src/drivers/opencode.mjs";
 
+// Skip the (slow) process-tree walk in tests; the direct parent is the harness stand-in.
+process.env.MESH_NO_PID_WALK = "1";
+
 describe("Phase 2: Worktree Isolation & Session Leasing Validation", () => {
   let testRepo;
   let broker;

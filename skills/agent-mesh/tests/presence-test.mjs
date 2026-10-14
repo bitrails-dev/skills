@@ -17,6 +17,9 @@ import { spawn } from "node:child_process";
 import { AgentMeshBroker } from "../src/broker.mjs";
 import { sendIpcRequest } from "../src/ipc.mjs";
 
+// Skip the (slow) process-tree walk in tests; the direct parent is the harness stand-in.
+process.env.MESH_NO_PID_WALK = "1";
+
 function runChild(file, args, options = {}) {
   return new Promise((resolve, reject) => {
     const proc = spawn(file, args, {

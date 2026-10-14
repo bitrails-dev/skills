@@ -79,6 +79,7 @@ export async function startBroker(rootDir) {
 
   const child = spawn(process.execPath, [brokerScript], {
     cwd: rootDir,
+    env: { ...process.env, MESH_BROKER_ROOT: rootDir },
     detached: true,
     stdio: ["ignore", logFd, logFd],
     windowsHide: true,

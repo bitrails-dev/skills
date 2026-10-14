@@ -81,7 +81,9 @@ const meshHops = Number(process.env.MESH_HOPS || 0);
 
 const cwd = process.cwd();
 const rootDir = findRepoRoot(cwd);
-const meshDir = join(rootDir, ".agent-mesh");
+// Single global broker per user: its state root is MESH_HOME (default ~), not the repo.
+const brokerRoot = process.env.MESH_HOME || homedir();
+const meshDir = join(brokerRoot, ".agent-mesh");
 const ipcAddress = resolveIpcAddress(rootDir);
 
 /**
@@ -256,7 +258,7 @@ async function main() {
       // Ensure broker daemon is running with latest code
       try {
         console.log(`\n[Broker Daemon] Verifying background daemon...`);
-        const broker = await ensureBroker({ rootDir, address: ipcAddress });
+        const broker = await ensureBroker({ rootDir: brokerRoot, address: ipcAddress });
         console.log(`[Broker Daemon] Active and healthy (PID: ${broker.pid}, v${broker.version || "1.1.0"}).`);
         console.log(`[Broker Daemon] IPC Address: ${ipcAddress}`);
       } catch (err) {
@@ -296,7 +298,7 @@ async function main() {
       }
 
       try {
-        await stopBroker({ rootDir, address: ipcAddress });
+        await stopBroker({ rootDir: brokerRoot, address: ipcAddress });
         console.log(`[Broker Daemon] Daemon stopped.`);
       } catch {}
 
@@ -306,7 +308,7 @@ async function main() {
 
     case "start": {
       try {
-        const broker = await ensureBroker({ rootDir, address: ipcAddress });
+        const broker = await ensureBroker({ rootDir: brokerRoot, address: ipcAddress });
         console.log(`agent-mesh broker is active (PID: ${broker.pid}, v${broker.version || "1.1.0"}).`);
         console.log(`IPC Address: ${ipcAddress}`);
       } catch (err) {
@@ -318,7 +320,7 @@ async function main() {
 
     case "stop": {
       try {
-        const res = await stopBroker({ rootDir, address: ipcAddress });
+        const res = await stopBroker({ rootDir: brokerRoot, address: ipcAddress });
         if (res.message) {
           console.log(res.message);
         } else {
@@ -696,7 +698,7 @@ async function main() {
 
         // Active Broker Diagnostics
         console.log(`\n--- BROKER DAEMON STATUS ---`);
-        const brokerInfo = getBrokerInfo(rootDir);
+        const brokerInfo = getBrokerInfo(brokerRoot);
         if (brokerInfo) {
           console.log(`  Daemon PID:    ${brokerInfo.pid} (active)`);
           console.log(`  Version:       ${brokerInfo.version || "1.1.0"}`);

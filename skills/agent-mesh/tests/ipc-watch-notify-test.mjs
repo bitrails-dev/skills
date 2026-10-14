@@ -20,6 +20,9 @@ import {
   getMeshHome,
 } from "../src/hooks/common.mjs";
 
+// Skip the (slow) process-tree walk in tests; the direct parent is the harness stand-in.
+process.env.MESH_NO_PID_WALK = "1";
+
 test("Multi-Tier IPC Resolution, PID Caching, and Audit Log Suite", async (t) => {
   await t.test("1. resolveIpcAddress prioritizes MESH_IPC_ADDRESS env override", () => {
     const origEnv = process.env.MESH_IPC_ADDRESS;
@@ -33,19 +36,22 @@ test("Multi-Tier IPC Resolution, PID Caching, and Audit Log Suite", async (t) =>
     }
   });
 
-  await t.test("2. resolveIpcAddress discovers local workspace broker.json", () => {
+  await t.test("2. resolveIpcAddress discovers the single global broker.json from any directory", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "mesh-local-ipc-"));
     const meshDir = join(tmpDir, ".agent-mesh");
     const brokerJson = join(meshDir, "broker.json");
+    const prevHome = process.env.MESH_HOME;
+    process.env.MESH_HOME = tmpDir;
     try {
-      execFileSync("git", ["init"], { cwd: tmpDir, stdio: "ignore" });
       const expectedPipe = "\\\\.\\pipe\\agent-mesh-test-local";
       mkdirSync(meshDir, { recursive: true });
       writeFileSync(brokerJson, JSON.stringify({ pid: process.pid, ipcAddress: expectedPipe }), "utf8");
 
-      const resolved = resolveIpcAddress(tmpDir);
+      const resolved = resolveIpcAddress(join(tmpdir(), "some-other-repo"));
       assert.equal(resolved, expectedPipe);
     } finally {
+      if (prevHome === undefined) delete process.env.MESH_HOME;
+      else process.env.MESH_HOME = prevHome;
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
@@ -105,10 +111,14 @@ test("Multi-Tier IPC Resolution, PID Caching, and Audit Log Suite", async (t) =>
     const claudeSession = `claude-fast-${Date.now()}`;
     const start = Date.now();
     const pid = resolveTrueHarnessPid(claudeSession, { harness: "claude", event: "SessionStart" });
-    const elapsedClaude = Date.now() - start;
-
     assert.ok(Number.isInteger(pid) && pid > 0);
-    assert.ok(elapsedClaude < 20, `Claude fast path took ${elapsedClaude}ms, must be < 20ms`);
+
+    // First call walks the process tree (once per session); the cached call must be fast
+    const startCached = Date.now();
+    const cachedPid = resolveTrueHarnessPid(claudeSession, { harness: "claude", event: "UserPromptSubmit" });
+    const elapsedClaude = Date.now() - startCached;
+    assert.equal(cachedPid, pid);
+    assert.ok(elapsedClaude < 20, `Cached path took ${elapsedClaude}ms, must be < 20ms`);
 
     // SessionEnd on clean session
     const endSession = `end-fast-${Date.now()}`;

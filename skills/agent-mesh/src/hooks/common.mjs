@@ -10,6 +10,7 @@ import {
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { toastArgs } from "../notify.mjs";
 
 /**
  * Regex matching any agent-mesh hook script invocation (including legacy names).
@@ -184,76 +185,40 @@ export function resolveTrueHarnessPid(sessionId, options = {}) {
     }
   } catch {}
 
-  // 3. Harness fast path: Claude Code, Codex, OpenCode, and Pi spawn hook node processes directly.
-  // In those harnesses, directPid (process.ppid) IS the authentic harness PID.
-  if (harness === "claude" || harness === "codex" || harness === "opencode" || harness === "pi") {
+  // 3. Walk up from the hook's parent past shell wrappers to the long-lived harness process.
+  // Windows: one pwsh/powershell invocation (Get-Process .Parent, ~1-2s) paid once per session, then cached.
+  const shells = ["cmd", "powershell", "pwsh", "conhost", "bash", "sh", "dash", "zsh", "fish", "wsl"];
+  let resolvedPid = directPid;
+  try {
+    if (process.env.MESH_NO_PID_WALK === "1") {
+      // test/opt-out: trust the direct parent
+    } else if (process.platform === "win32") {
+      const script =
+        `$s=@('${shells.join("','")}');$p=Get-Process -Id ${directPid} -ErrorAction SilentlyContinue;` +
+        `while($p -and $p.ProcessName.ToLower() -in $s -and $p.Parent){$p=$p.Parent};if($p){$p.Id}`;
+      const out = execFileSync(
+        "pwsh.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", script],
+        { encoding: "utf8", timeout: 5000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }
+      ).trim();
+      if (/^\d+$/.test(out)) resolvedPid = Number(out);
+    } else {
+      let curr = directPid;
+      for (let i = 0; i < 8; i++) {
+        const [ppid, comm] = execFileSync("ps", ["-o", "ppid=,comm=", "-p", String(curr)], { encoding: "utf8" })
+          .trim().split(/\s+/);
+        if (!shells.includes(String(comm).split("/").pop().toLowerCase()) || !Number(ppid)) break;
+        curr = Number(ppid);
+      }
+      resolvedPid = curr;
+    }
+  } catch {}
+  if (resolvedPid && isProcessAlive(resolvedPid)) {
     try {
       mkdirSync(pidsDir, { recursive: true });
-      writeFileSync(pidFile, String(directPid), "utf8");
+      writeFileSync(pidFile, String(resolvedPid), "utf8");
     } catch {}
-    return directPid;
-  }
-
-  let resolvedPid = directPid;
-
-  // 4. Windows wrapper shell handling (primarily for Antigravity where cmd.exe wraps the invocation)
-  if (process.platform === "win32") {
-    if (harness === "antigravity") {
-      // NEVER block hook on synchronous PowerShell/WMI crawling (which takes 6.5s on Windows).
-      // Return null synchronously so the hook finishes in < 15ms and the session is NOT prematurely reaped.
-      // Launch an unreferenced detached background worker to asynchronously resolve agy.exe and populate the PID cache.
-      try {
-        const resolveScript = `
-          try {
-            $shells = @('cmd.exe', 'powershell.exe', 'pwsh.exe', 'conhost.exe');
-            $p = Get-CimInstance Win32_Process -Filter "ProcessId = ${directPid}";
-            while ($p -and ($p.Name.ToLower() -in $shells) -and $p.ParentProcessId) {
-              $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $($p.ParentProcessId)";
-              if (-not $parent) { break }
-              $p = $parent;
-            }
-            if ($p -and $p.ProcessId) {
-              Set-Content -Path '${pidFile.replace(/\\/g, "/")}' -Value $p.ProcessId -Encoding ASCII;
-            }
-          } catch {}
-        `;
-        const worker = spawn(
-          "powershell.exe",
-          ["-NoProfile", "-NonInteractive", "-Command", resolveScript],
-          {
-            detached: true,
-            stdio: "ignore",
-            windowsHide: true,
-          }
-        );
-        worker.unref?.();
-      } catch {}
-      return null;
-    }
-  } else {
-    // POSIX / Linux: Walk up /proc/<pid>/stat field 4, skipping shells (< 2ms)
-    try {
-      const shells = new Set(["sh", "bash", "dash", "zsh", "fish"]);
-      let curr = directPid;
-      for (let i = 0; i < 6; i++) {
-        const statPath = `/proc/${curr}/stat`;
-        if (!existsSync(statPath)) break;
-        const statStr = readFileSync(statPath, "utf8");
-        const parts = statStr.split(" ");
-        const comm = parts[1]?.replace(/[()]/g, "").toLowerCase();
-        const ppid = Number(parts[3]);
-        if (!ppid || !isProcessAlive(ppid)) break;
-        curr = ppid;
-        if (!shells.has(comm)) break;
-      }
-      if (curr && isProcessAlive(curr)) {
-        try {
-          mkdirSync(pidsDir, { recursive: true });
-          writeFileSync(pidFile, String(curr), "utf8");
-        } catch {}
-        return curr;
-      }
-    } catch {}
+    return resolvedPid;
   }
 
   // 5. Cache fallback directPid
@@ -295,31 +260,17 @@ export function notifyHookPresence({ harness, event, state, sessionId, pid }) {
     process.stderr.write("\x07");
   } catch {}
 
-  // 2. Windows audio chime and auto-dismissing popup using quote-safe -EncodedCommand
+  // 2. Windows system (toast) notification
   if (process.platform === "win32") {
     try {
-      const popupText = `[Agent Mesh] ${harnessUpper} ${event}${stateStr}\nSession: ${sidShort}${pidStr}`;
-      const psScript = `
-        try {
-          $sound = 'C:\\Windows\\Media\\Windows Notify System Generic.wav';
-          if (Test-Path $sound) {
-            (New-Object System.Media.SoundPlayer $sound).Play();
-          } else {
-            [System.Media.SystemSounds]::Asterisk.Play();
-          }
-          (New-Object -ComObject Wscript.Shell).Popup(@"
-${popupText}
-"@, 2, 'Agent Mesh Presence', 4160);
-        } catch {}
-      `;
-      const encoded = Buffer.from(psScript, "utf16le").toString("base64");
+      const body = `${harnessUpper}${stateStr}  Session: ${sidShort}${pidStr}`;
       // ponytail: detached:true makes powershell silently no-op and plain children die with the
-        // parent; `cmd /c start` + spawnSync (returns in ms) is the combo that survives hook exit.
-        spawnSync(
-          "cmd.exe",
-          ["/c", "start", "", "/min", "powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-          { stdio: "ignore", windowsHide: true }
-        );
+      // parent; `cmd /c start` + spawnSync (returns in ms) is the combo that survives hook exit.
+      spawnSync(
+        "cmd.exe",
+        ["/c", "start", "", "/min", "powershell.exe", ...toastArgs(`Agent Mesh: ${event}`, body)],
+        { stdio: "ignore", windowsHide: true }
+      );
     } catch {}
   }
 }

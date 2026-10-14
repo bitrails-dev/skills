@@ -72,9 +72,8 @@ export function getIpcAddress(cwd) {
  * Resolves the active IPC address authoritative for this workspace and user session.
  * Discovery hierarchy:
  * 1. MESH_IPC_ADDRESS environment variable
- * 2. Local workspace broker: <findRepoRoot(dir)>/.agent-mesh/broker.json (if file exists and PID is alive)
- * 3. User-global broker pointer: ~/.agent-mesh/broker.json (if file exists and PID is alive)
- * 4. Fallback: deterministic pipe/socket address derived from canonical repo root
+ * 2. User-global broker pointer: ~/.agent-mesh/broker.json (if file exists and PID is alive)
+ * 3. Fallback: deterministic per-user global pipe/socket address
  *
  * @param {string} [dir=process.cwd()]
  * @returns {string} Authoritative pipe or socket address.
@@ -82,21 +81,7 @@ export function getIpcAddress(cwd) {
 export function resolveIpcAddress(dir = process.cwd()) {
   if (process.env.MESH_IPC_ADDRESS) return process.env.MESH_IPC_ADDRESS;
 
-  // 1. Local workspace broker.json
-  const root = findRepoRoot(dir);
-  const localBrokerPath = join(root, ".agent-mesh", "broker.json");
-  if (existsSync(localBrokerPath)) {
-    try {
-      const data = JSON.parse(readFileSync(localBrokerPath, "utf8"));
-      if (data?.ipcAddress) {
-        if (!data.pid || isPidAlive(data.pid)) {
-          return data.ipcAddress;
-        }
-      }
-    } catch {}
-  }
-
-  // 2. User-global broker.json
+  // User-global broker pointer (single broker per user)
   const meshHome = process.env.MESH_HOME || homedir();
   const globalBrokerPath = join(meshHome, ".agent-mesh", "broker.json");
   if (existsSync(globalBrokerPath)) {
@@ -110,7 +95,9 @@ export function resolveIpcAddress(dir = process.cwd()) {
     } catch {}
   }
 
-  return getIpcAddress(root);
+  // Single global broker per user: every repo/harness falls back to the same pipe, so the pipe
+  // itself is the single-instance lock.
+  return getIpcAddress(meshHome);
 }
 
 /**

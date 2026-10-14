@@ -19,6 +19,7 @@ import { createCodexDriver } from "./drivers/codex.mjs";
 import { createAcpDriver } from "./drivers/acp.mjs";
 import { ensureAgentWorktree } from "./worktree.mjs";
 import { VERSION } from "./version.mjs";
+import { toastArgs } from "./notify.mjs";
 
 /**
  * Safe process liveness check.
@@ -150,6 +151,10 @@ export class AgentMeshBroker {
       this.scheduleDispatch();
     }, 30000);
 
+    // 5b. PID watch: one kill(pid, 0) per live session every 2s (cheap) reports killed sessions
+    this.pidWatchTimer = setInterval(() => this.reapStaleLeases(), 2000);
+    this.pidWatchTimer.unref?.();
+
     // 6. Initial check for pending messages across all registered harnesses
     this.scheduleDispatch();
 
@@ -262,7 +267,8 @@ export class AgentMeshBroker {
           }
         }
 
-        // Notify desktop asynchronously of session lifecycle events
+        // Hooks raise the session start/end toast themselves (works with the broker down);
+        // notifyDesktop's OS filter keeps these silent to avoid duplicates.
         this.notifyDesktop({
           harness: resolvedHarness,
           event,
@@ -404,6 +410,13 @@ export class AgentMeshBroker {
           if (!isProcessAlive(sess.pid)) {
             if (sess.origin === "interactive") {
               this.repo.updateSessionState(sess.session_id, "closed", null);
+              this.notifyDesktop({
+                harness: sess.harness,
+                event: "killed",
+                state: "process exited",
+                sessionId: sess.session_id,
+                pid: sess.pid,
+              });
             } else if (sess.state === "human-held") {
               this.repo.updateSessionState(sess.session_id, "idle", null);
             }
@@ -659,61 +672,26 @@ Process the message(s) above, take appropriate action, and reply via the CLI.`;
     if (process.env.MESH_SILENT === "1") return;
     if (process.platform !== "win32") return;
 
-    // Filter to session lifecycle transitions and inbox message arrival to avoid notification spam
-    const notifyEvents = new Set([
-      "start",
-      "end",
-      "SessionStart",
-      "SessionEnd",
-      "inbox",
-      "broker_start",
-      "broker_stop",
-    ]);
+    // Hooks announce session start/end themselves; the broker only raises daemon/inbox/kill events.
+    const notifyEvents = new Set(["inbox", "broker_start", "broker_stop", "killed"]);
     if (!notifyEvents.has(event)) return;
+
+    const labels = {
+      broker_start: "Broker started",
+      broker_stop: "Broker stopped",
+      inbox: "New message",
+      killed: "Session killed",
+    };
+    const who = event.startsWith("broker_") ? `PID ${pid}` : `${String(harness).toUpperCase()} ${sessionId ? String(sessionId).slice(0, 8) : ""}${pid ? ` [PID ${pid}]` : ""}`;
+    const body = `${who}${state ? ` (${state})` : ""}`;
 
     setImmediate(() => {
       try {
-        const harnessUpper = String(harness || "unknown").toUpperCase();
-        const sidShort = sessionId ? `${String(sessionId).slice(0, 8)}…` : "no-session";
-        const stateStr = state ? ` (${state})` : "";
-        const pidStr = pid ? ` [PID: ${pid}]` : "";
-        const actionLabel =
-          event === "broker_start"
-            ? "Broker Daemon Started"
-            : event === "broker_stop"
-            ? "Broker Daemon Stopped"
-            : event === "start" || event === "SessionStart"
-            ? "Session Started"
-            : event === "end" || event === "SessionEnd"
-            ? "Session Ended"
-            : event === "inbox"
-            ? "New Message"
-            : event;
-        const popupText =
-          event === "broker_start" || event === "broker_stop"
-            ? `[Agent Mesh] ${actionLabel}${stateStr}\nDaemon: ${sessionId || "v1.1.0"}${pidStr}\nIPC: ${this.ipcAddress}`
-            : `[Agent Mesh] ${harnessUpper} ${actionLabel}${stateStr}\nSession: ${sidShort}${pidStr}`;
-
-        const psScript = `
-          try {
-            $sound = 'C:\\Windows\\Media\\Windows Notify System Generic.wav';
-            if (Test-Path $sound) {
-              (New-Object System.Media.SoundPlayer $sound).Play();
-            } else {
-              [System.Media.SystemSounds]::Asterisk.Play();
-            }
-            (New-Object -ComObject Wscript.Shell).Popup(@"
-${popupText}
-"@, 2, 'Agent Mesh Presence', 4160);
-          } catch {}
-        `;
-        const encoded = Buffer.from(psScript, "utf16le").toString("base64");
-        // ponytail: broker is long-lived, so a plain async child survives; detached:true makes powershell no-op.
-        spawn(
-          "powershell.exe",
-          ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-          { stdio: "ignore", windowsHide: true }
-        ).on("error", () => {});
+        // ponytail: detached:true makes powershell no-op; broker is long-lived so a plain child survives.
+        spawn("powershell.exe", toastArgs(`Agent Mesh: ${labels[event]}`, body), {
+          stdio: "ignore",
+          windowsHide: true,
+        }).on("error", () => {});
       } catch {}
     });
   }
@@ -735,6 +713,7 @@ ${popupText}
       pid: process.pid,
     });
 
+    if (this.pidWatchTimer) clearInterval(this.pidWatchTimer);
     if (this.maintenanceTimer) {
       clearInterval(this.maintenanceTimer);
       this.maintenanceTimer = null;
@@ -815,7 +794,8 @@ ${popupText}
 
 // Standalone runner
 if (process.argv[1]?.endsWith("broker.mjs")) {
-  const broker = new AgentMeshBroker(process.cwd());
+  // Single global broker per user: state root is MESH_HOME (default ~), never the launch directory.
+  const broker = new AgentMeshBroker(process.env.MESH_BROKER_ROOT || process.env.MESH_HOME || homedir());
   broker
     .start()
     .then((info) => {

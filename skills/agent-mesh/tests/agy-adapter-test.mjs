@@ -12,6 +12,9 @@ import { join } from "node:path";
 import { AgentMeshBroker } from "../src/broker.mjs";
 import { sendIpcRequest } from "../src/ipc.mjs";
 
+// Skip the (slow) process-tree walk in tests; the direct parent is the harness stand-in.
+process.env.MESH_NO_PID_WALK = "1";
+
 /**
  * Spawns agy-presence-hook.mjs as a child process and pipes JSON to stdin.
  * @param {object} inputPayload

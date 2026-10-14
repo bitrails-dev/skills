@@ -71,6 +71,12 @@ async function main() {
 
     const sessionId = input.conversationId;
     if (!sessionId) {
+      appendHookAuditLog({
+        harness: "antigravity",
+        event: phase,
+        ok: false,
+        error: `no conversationId in payload (keys: ${Object.keys(input).join(",") || "none"})`,
+      });
       await emitJson(isStartOrPre ? {} : { decision: "allow" });
       process.exit(0);
     }

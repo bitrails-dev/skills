@@ -1,6 +1,6 @@
 {
   "name": "agent-mesh",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Universal inter-harness coordination mesh for Claude, Antigravity, OpenCode, Pi, and Codex",
   "type": "module",
   "bin": {
