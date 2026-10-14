@@ -21,6 +21,11 @@ import {
 
 async function main() {
   const startTime = Date.now();
+
+  // Hard execution timeout: guarantee hook exits cleanly before any harness timeout
+  const safetyTimer = setTimeout(() => process.exit(0), 3000);
+  safetyTimer.unref?.();
+
   let phase = "Stop"; // Safe default
   let input = {};
 
@@ -70,7 +75,7 @@ async function main() {
     }
 
     const address = resolveIpcAddress(cwd);
-    const pid = resolveTrueHarnessPid(sessionId);
+    const pid = resolveTrueHarnessPid(sessionId, { harness: "antigravity", event: phase });
 
     if (phase === "PreInvocation") {
       let reqOk = false;
@@ -89,7 +94,8 @@ async function main() {
               origin: "interactive",
             },
           },
-          0
+          0,
+          { timeoutMs: 800 }
         );
         reqOk = res?.ok ?? false;
       } catch (err) {
@@ -126,7 +132,8 @@ async function main() {
           action: "claim_inbox",
           payload: { agent: "antigravity", sessionId },
         },
-        0
+        0,
+        { timeoutMs: 800 }
       );
       claimOk = res?.ok ?? false;
     } catch (err) {
@@ -149,7 +156,8 @@ async function main() {
           action: "ack",
           payload: { ids: res.messages.map((m) => m.id) },
         },
-        0
+        0,
+        { timeoutMs: 800 }
       ).catch(() => {});
 
       appendHookAuditLog({
@@ -174,7 +182,8 @@ async function main() {
             action: "session_event",
             payload: { harness: "antigravity", sessionId, event: "idle", pid, cwd },
           },
-          0
+          0,
+          { timeoutMs: 800 }
         );
         idleOk = idleRes?.ok ?? false;
       } catch {}

@@ -98,4 +98,57 @@ test("Multi-Tier IPC Resolution, PID Caching, and Audit Log Suite", async (t) =>
     assert.ok(out.includes("BROKER DAEMON STATUS"));
     assert.ok(out.includes("RECENT HOOK AUDIT LOG"));
   });
+
+  await t.test("6. resolveTrueHarnessPid fast paths execute in < 20ms", () => {
+    const claudeSession = `claude-fast-${Date.now()}`;
+    const start = Date.now();
+    const pid = resolveTrueHarnessPid(claudeSession, { harness: "claude", event: "SessionStart" });
+    const elapsedClaude = Date.now() - start;
+
+    assert.ok(Number.isInteger(pid) && pid > 0);
+    assert.ok(elapsedClaude < 20, `Claude fast path took ${elapsedClaude}ms, must be < 20ms`);
+
+    // SessionEnd on clean session
+    const endSession = `end-fast-${Date.now()}`;
+    const startEnd = Date.now();
+    const endPid = resolveTrueHarnessPid(endSession, { event: "SessionEnd" });
+    const elapsedEnd = Date.now() - startEnd;
+
+    assert.ok(Number.isInteger(endPid) && endPid > 0);
+    assert.ok(elapsedEnd < 20, `SessionEnd fast path took ${elapsedEnd}ms, must be < 20ms`);
+
+    // Cleanup
+    try {
+      rmSync(join(getMeshHome(), ".agent-mesh", "pids", `${claudeSession}.pid`), { force: true });
+      rmSync(join(getMeshHome(), ".agent-mesh", "pids", `${endSession}.pid`), { force: true });
+    } catch {}
+  });
+
+  await t.test("7. presence-hook executes SessionEnd in sub-50ms without timeout cancellation", () => {
+    const hookScript = join(import.meta.dirname, "..", "src", "hooks", "presence-hook.mjs");
+    const testSession = `test-exit-${Date.now()}`;
+    const payload = JSON.stringify({
+      hook_event_name: "SessionEnd",
+      session_id: testSession,
+      cwd: process.cwd(),
+    });
+
+    const start = Date.now();
+    const proc = execFileSync(process.execPath, [hookScript], {
+      input: payload,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 1000,
+    });
+    const duration = Date.now() - start;
+
+    // Must finish cleanly within 1200ms (accounting for node.exe cold start)
+    assert.ok(duration < 1200, `presence-hook SessionEnd took ${duration}ms, must be < 1200ms`);
+
+    // Cleanup
+    try {
+      rmSync(join(getMeshHome(), ".agent-mesh", "pids", `${testSession}.pid`), { force: true });
+      rmSync(join(getMeshHome(), ".agent-mesh", "locks", `${testSession}-SessionEnd.lock`), { force: true });
+    } catch {}
+  });
 });

@@ -7,16 +7,24 @@
  * - Injects waiting messages from peer agents on Stop without printing extraneous output.
  */
 
+import { existsSync, mkdirSync, writeFileSync, statSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
 import { resolveIpcAddress, sendIpcRequest } from "../ipc.mjs";
 import {
   readStdinJson,
   emitJson,
   resolveTrueHarnessPid,
   appendHookAuditLog,
+  getMeshHome,
 } from "./common.mjs";
 
 async function main() {
   const startTime = Date.now();
+
+  // Hard execution timeout: guarantee hook never exceeds 1000ms under any circumstances
+  const safetyTimer = setTimeout(() => process.exit(0), 1000);
+  safetyTimer.unref?.();
+
   let input = {};
 
   try {
@@ -35,14 +43,29 @@ async function main() {
     process.exit(0);
   }
 
-  const cwd = input.cwd || process.cwd();
-  const address = resolveIpcAddress(cwd);
-  const pid = resolveTrueHarnessPid(sessionId);
-
   const harnessArgIdx = process.argv.indexOf("--harness");
   const harness = harnessArgIdx !== -1 && process.argv[harnessArgIdx + 1]
     ? process.argv[harnessArgIdx + 1]
     : "claude";
+
+  // Deduplication guard: Claude Code can fire hooks from both plugin hooks.json and settings.json
+  const cleanSessionId = String(sessionId).replace(/[^\w-]/g, "");
+  const dedupeDir = join(getMeshHome(), ".agent-mesh", "locks");
+  const lockFile = join(dedupeDir, `${cleanSessionId}-${eventName}.lock`);
+  try {
+    if (existsSync(lockFile)) {
+      const age = Date.now() - statSync(lockFile).mtimeMs;
+      if (age < 1500) {
+        process.exit(0);
+      }
+    }
+    mkdirSync(dedupeDir, { recursive: true });
+    writeFileSync(lockFile, String(Date.now()), "utf8");
+  } catch {}
+
+  const cwd = input.cwd || process.cwd();
+  const address = resolveIpcAddress(cwd);
+  const pid = resolveTrueHarnessPid(sessionId, { harness, event: eventName });
 
   switch (eventName) {
     case "SessionStart": {
@@ -59,7 +82,7 @@ async function main() {
             cwd,
             origin: "interactive",
           },
-        }, 0);
+        }, 0, { timeoutMs: 800 });
         ok = res?.ok ?? false;
       } catch (e) {
         err = e.message;
@@ -97,7 +120,7 @@ async function main() {
             cwd,
             origin: "interactive",
           },
-        }, 0);
+        }, 0, { timeoutMs: 800 });
         ok = res?.ok ?? false;
       } catch (e) {
         err = e.message;
@@ -130,7 +153,7 @@ async function main() {
         const res = await sendIpcRequest(address, {
           action: "claim_inbox",
           payload: { agent: harness, sessionId },
-        }, 1);
+        }, 1, { timeoutMs: 800 });
 
         if (res.ok && res.messages && res.messages.length > 0) {
           const formatted = res.messages
@@ -147,7 +170,7 @@ async function main() {
           await sendIpcRequest(address, {
             action: "ack",
             payload: { ids: res.messages.map((m) => m.id) },
-          }, 0).catch(() => {});
+          }, 0, { timeoutMs: 800 }).catch(() => {});
 
           appendHookAuditLog({
             harness,
@@ -166,7 +189,7 @@ async function main() {
           await sendIpcRequest(address, {
             action: "session_event",
             payload: { harness, sessionId, event: "idle", pid, cwd },
-          }, 0).catch(() => {});
+          }, 0, { timeoutMs: 800 }).catch(() => {});
 
           appendHookAuditLog({
             harness,
@@ -204,7 +227,15 @@ async function main() {
       await sendIpcRequest(address, {
         action: "session_event",
         payload: { harness, sessionId, event: "end", pid, cwd },
-      }, 0).catch(() => {});
+      }, 0, { timeoutMs: 600 }).catch(() => {});
+
+      // Clean up session pid cache and lock files
+      try {
+        unlinkSync(join(getMeshHome(), ".agent-mesh", "pids", `${cleanSessionId}.pid`));
+      } catch {}
+      try {
+        unlinkSync(lockFile);
+      } catch {}
 
       appendHookAuditLog({
         harness,

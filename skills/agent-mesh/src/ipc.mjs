@@ -251,10 +251,13 @@ export function startIpcServer(address, requestHandler, options = {}) {
  * Sends a single RPC request to the running IPC server with retry backoff.
  * @param {string} address - Pipe or socket address.
  * @param {object} message - Request payload.
- * @param {number} maxRetries - Maximum retry attempts.
+ * @param {number} [maxRetries=3] - Maximum retry attempts.
+ * @param {object} [options={}] - Request options.
+ * @param {number} [options.timeoutMs=15000] - Socket timeout in milliseconds.
  * @returns {Promise<object>} Response payload.
  */
-export async function sendIpcRequest(address, message, maxRetries = 3) {
+export async function sendIpcRequest(address, message, maxRetries = 3, options = {}) {
+  const timeoutMs = options.timeoutMs ?? 15000;
   let attempt = 0;
 
   while (attempt <= maxRetries) {
@@ -286,7 +289,7 @@ export async function sendIpcRequest(address, message, maxRetries = 3) {
           reject(err);
         });
 
-        socket.setTimeout(15000, () => {
+        socket.setTimeout(timeoutMs, () => {
           socket.destroy(new Error("IPC connection timed out."));
         });
       });

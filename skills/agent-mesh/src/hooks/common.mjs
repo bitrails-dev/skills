@@ -147,17 +147,34 @@ export function getMeshHome() {
  * caches the result in ~/.agent-mesh/pids/<sessionId>.pid for sub-millisecond future lookups.
  *
  * @param {string} [sessionId]
+ * @param {object} [options={}]
+ * @param {string} [options.harness]
+ * @param {string} [options.event]
+ * @param {boolean} [options.fastOnly]
  * @returns {number}
  */
-export function resolveTrueHarnessPid(sessionId) {
+export function resolveTrueHarnessPid(sessionId, options = {}) {
   const directPid = process.ppid || process.pid;
   if (!sessionId) return directPid;
 
+  const harness = String(options.harness || "").toLowerCase();
+  const event = String(options.event || "");
   const cleanSessionId = String(sessionId).replace(/[^\w-]/g, "");
   const pidsDir = join(getMeshHome(), ".agent-mesh", "pids");
   const pidFile = join(pidsDir, `${cleanSessionId}.pid`);
 
-  // 1. Check cache first (< 0.2ms)
+  // 1. SessionEnd fast path: never crawl or spawn external processes when terminating
+  if (event === "SessionEnd" || options.fastOnly) {
+    try {
+      if (existsSync(pidFile)) {
+        const cached = Number(readFileSync(pidFile, "utf8").trim());
+        if (cached) return cached;
+      }
+    } catch {}
+    return directPid;
+  }
+
+  // 2. Check cache first (< 0.2ms)
   try {
     if (existsSync(pidFile)) {
       const cached = Number(readFileSync(pidFile, "utf8").trim());
@@ -167,19 +184,28 @@ export function resolveTrueHarnessPid(sessionId) {
     }
   } catch {}
 
+  // 3. Harness fast path: Claude Code, Codex, OpenCode, and Pi spawn hook node processes directly.
+  // In those harnesses, directPid (process.ppid) IS the authentic harness PID.
+  if (harness === "claude" || harness === "codex" || harness === "opencode" || harness === "pi") {
+    try {
+      mkdirSync(pidsDir, { recursive: true });
+      writeFileSync(pidFile, String(directPid), "utf8");
+    } catch {}
+    return directPid;
+  }
+
   let resolvedPid = directPid;
 
-  // 2. Windows shell-skipping ancestor traversal
+  // 4. Windows wrapper shell ascent (primarily for Antigravity where cmd.exe wraps the invocation)
   if (process.platform === "win32") {
     try {
       const script = `
         $shells = @('cmd.exe', 'powershell.exe', 'pwsh.exe', 'bash.exe', 'sh.exe', 'conhost.exe');
         $p = Get-CimInstance Win32_Process -Filter "ProcessId = ${directPid}";
-        while ($p -and $p.ParentProcessId) {
+        while ($p -and ($p.Name.ToLower() -in $shells) -and $p.ParentProcessId) {
           $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $($p.ParentProcessId)";
           if (-not $parent) { break }
           $p = $parent;
-          if ($p.Name.ToLower() -notin $shells) { break }
         }
         if ($p) { $p.ProcessId } else { ${directPid} }
       `;
@@ -189,7 +215,7 @@ export function resolveTrueHarnessPid(sessionId) {
         {
           encoding: "utf8",
           stdio: ["ignore", "pipe", "ignore"],
-          timeout: 3500,
+          timeout: 1200,
         }
       ).trim();
       const nonShellAncestor = Number(out);
@@ -219,7 +245,7 @@ export function resolveTrueHarnessPid(sessionId) {
     } catch {}
   }
 
-  // 3. Cache resolved PID
+  // 5. Cache resolved PID
   try {
     mkdirSync(pidsDir, { recursive: true });
     writeFileSync(pidFile, String(resolvedPid), "utf8");
