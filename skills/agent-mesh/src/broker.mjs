@@ -153,6 +153,15 @@ export class AgentMeshBroker {
     // 6. Initial check for pending messages across all registered harnesses
     this.scheduleDispatch();
 
+    // 7. ADR-009: Notify desktop asynchronously of background daemon startup
+    this.notifyDesktop({
+      harness: "broker",
+      event: "broker_start",
+      state: "active",
+      sessionId: this.version ? `v${this.version}` : undefined,
+      pid: process.pid,
+    });
+
     return { ok: true, pid: process.pid, address: this.ipcAddress };
   }
 
@@ -651,7 +660,15 @@ Process the message(s) above, take appropriate action, and reply via the CLI.`;
     if (process.platform !== "win32") return;
 
     // Filter to session lifecycle transitions and inbox message arrival to avoid notification spam
-    const notifyEvents = new Set(["start", "end", "SessionStart", "SessionEnd", "inbox"]);
+    const notifyEvents = new Set([
+      "start",
+      "end",
+      "SessionStart",
+      "SessionEnd",
+      "inbox",
+      "broker_start",
+      "broker_stop",
+    ]);
     if (!notifyEvents.has(event)) return;
 
     setImmediate(() => {
@@ -661,14 +678,21 @@ Process the message(s) above, take appropriate action, and reply via the CLI.`;
         const stateStr = state ? ` (${state})` : "";
         const pidStr = pid ? ` [PID: ${pid}]` : "";
         const actionLabel =
-          event === "start" || event === "SessionStart"
+          event === "broker_start"
+            ? "Broker Daemon Started"
+            : event === "broker_stop"
+            ? "Broker Daemon Stopped"
+            : event === "start" || event === "SessionStart"
             ? "Session Started"
             : event === "end" || event === "SessionEnd"
             ? "Session Ended"
             : event === "inbox"
             ? "New Message"
             : event;
-        const popupText = `[Agent Mesh] ${harnessUpper} ${actionLabel}${stateStr}\nSession: ${sidShort}${pidStr}`;
+        const popupText =
+          event === "broker_start" || event === "broker_stop"
+            ? `[Agent Mesh] ${actionLabel}${stateStr}\nDaemon: ${sessionId || "v1.1.0"}${pidStr}\nIPC: ${this.ipcAddress}`
+            : `[Agent Mesh] ${harnessUpper} ${actionLabel}${stateStr}\nSession: ${sidShort}${pidStr}`;
 
         const psScript = `
           try {
@@ -705,6 +729,15 @@ ${popupText}
   async gracefulShutdown({ drainMs } = {}) {
     this.running = false;
     this.draining = true;
+
+    // ADR-009: Notify desktop asynchronously of daemon shutdown
+    this.notifyDesktop({
+      harness: "broker",
+      event: "broker_stop",
+      state: "stopped",
+      sessionId: this.version ? `v${this.version}` : undefined,
+      pid: process.pid,
+    });
 
     if (this.maintenanceTimer) {
       clearInterval(this.maintenanceTimer);

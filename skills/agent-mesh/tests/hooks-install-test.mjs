@@ -26,6 +26,29 @@ import {
   autoDiscoverHarnesses,
 } from "../src/hooks/installer.mjs";
 
+/**
+ * Utility: safe recursive directory removal with retry for Windows file locks.
+ *
+ * On Windows, antivirus scanners and the OS file-system indexer occasionally
+ * hold a short-lived handle on a temp directory immediately after a child
+ * process (spawnSync) exits. A plain `rmSync` call in that window throws
+ * EBUSY and fails the test. Retrying 15 times with 100 ms gaps (1.5 s total)
+ * is sufficient to outlast the scan without meaningfully slowing the suite.
+ *
+ * @param {string} dir - Absolute path of directory to remove.
+ * @returns {Promise<void>}
+ */
+async function safeRmSync(dir) {
+  for (let i = 0; i < 15; i++) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+}
+
 test("Lifecycle Hook Installer & Uninstaller Suite", async (t) => {
   await t.test("1. Install into missing Claude settings.json creates all 4 events cleanly", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "mesh-hook-test-"));
@@ -230,7 +253,7 @@ test("Lifecycle Hook Installer & Uninstaller Suite", async (t) => {
     }
   });
 
-  await t.test("8. CLI --init and --uninstall work cleanly via CLI execution", () => {
+  await t.test("8. CLI --init and --uninstall work cleanly via CLI execution", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "mesh-cli-init-test-"));
     const cliScript = join(import.meta.dirname, "../scripts/mesh.mjs");
 
@@ -263,8 +286,11 @@ test("Lifecycle Hook Installer & Uninstaller Suite", async (t) => {
       const agyData = JSON.parse(readFileSync(agyPath, "utf8"));
       assert.equal(agyData["agent-mesh-presence"], undefined);
     } finally {
+      // Stop any broker started by --init before removing the temp dir.
+      // safeRmSync retries on EBUSY: Windows AV/indexer can hold a handle
+      // briefly after spawnSync returns, causing a plain rmSync to throw.
       spawnSync(process.execPath, [cliScript, "stop"], { cwd: tmpDir });
-      rmSync(tmpDir, { recursive: true, force: true });
+      await safeRmSync(tmpDir);
     }
   });
 
@@ -368,7 +394,7 @@ test("Lifecycle Hook Installer & Uninstaller Suite", async (t) => {
     assert.ok(detected.includes("claude") || detected.includes("agy"));
   });
 
-  await t.test("13. CLI targeted --init codex,pi and --uninstall codex,pi work end-to-end", () => {
+  await t.test("13. CLI targeted --init codex,pi and --uninstall codex,pi work end-to-end", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "mesh-cli-targeted-"));
     const cliScript = join(import.meta.dirname, "../scripts/mesh.mjs");
 
@@ -404,8 +430,10 @@ test("Lifecycle Hook Installer & Uninstaller Suite", async (t) => {
       assert.equal(codexData.hooks?.SessionStart, undefined);
       assert.equal(existsSync(piPath), false);
     } finally {
+      // Stop any broker before cleanup; safeRmSync retries on Windows EBUSY
+      // (AV/indexer holds handle briefly after child process exit).
       spawnSync(process.execPath, [cliScript, "stop"], { cwd: tmpDir });
-      rmSync(tmpDir, { recursive: true, force: true });
+      await safeRmSync(tmpDir);
     }
   });
 });
