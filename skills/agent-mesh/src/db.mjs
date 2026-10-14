@@ -84,6 +84,7 @@ export function initDatabase(dbPath) {
 
   // Schema migrations for existing databases
   const sessionCols = db.prepare("PRAGMA table_info(sessions)").all().map((c) => c.name);
+  if (!sessionCols.includes("name")) db.exec("ALTER TABLE sessions ADD COLUMN name TEXT;");
   if (!sessionCols.includes("origin")) db.exec("ALTER TABLE sessions ADD COLUMN origin TEXT NOT NULL DEFAULT 'mesh';");
   if (!sessionCols.includes("presence")) db.exec("ALTER TABLE sessions ADD COLUMN presence TEXT NOT NULL DEFAULT 'none';");
   if (!sessionCols.includes("pid")) db.exec("ALTER TABLE sessions ADD COLUMN pid INT;");
@@ -286,12 +287,19 @@ export class MeshRepository {
    * @param {object} event
    * @returns {{ok: boolean, state: string}}
    */
-  updateSessionEvent({ harness, sessionId, event, pid = null, cwd = null, origin = "interactive" }) {
+  updateSessionEvent({ harness, sessionId, event, pid = null, cwd = null, origin = "interactive", name = null }) {
     const now = Date.now();
     let state = "idle";
     if (event === "busy") state = "busy";
     else if (event === "end" || event === "closed") state = "closed";
     else if (event === "start" || event === "idle") state = "idle";
+
+    const prevRow = sessionId
+      ? this.db.prepare("SELECT name, state FROM sessions WHERE session_id = ?").get(sessionId)
+      : null;
+    const prevName = prevRow?.name ?? null;
+    // "rename" is a pure metadata event: keep the current state
+    if (event === "rename") state = prevRow?.state || "idle";
 
     // Supersede older rows for this (harness, pid) if sessionId changed (e.g. /clear)
     if (pid && sessionId) {
@@ -314,7 +322,16 @@ export class MeshRepository {
       now,
       now
     );
-    return { ok: true, state };
+    let renamed = null;
+    if (name && sessionId) {
+      const next = String(name).slice(0, 120);
+      const prev = prevName;
+      if (prev !== next) {
+        this.db.prepare("UPDATE sessions SET name = ? WHERE session_id = ?").run(next, sessionId);
+        renamed = { from: prev, to: next };
+      }
+    }
+    return { ok: true, state, renamed };
   }
 
   /**

@@ -362,7 +362,8 @@ async function main() {
           for (const s of live) {
             const originTag = s.origin === "interactive" ? "[Interactive]" : "[Mesh-Headless]";
             const pidTag = s.pid ? `PID: ${s.pid}` : "No PID";
-            console.log(`  - [${s.harness}] ID: ${s.session_id} | State: ${s.state} | ${originTag} | ${pidTag}`);
+            const nameTag = s.name ? ` "${s.name}"` : "";
+            console.log(`  - [${s.harness}]${nameTag} ID: ${s.session_id} | State: ${s.state} | ${originTag} | ${pidTag}`);
           }
         }
         console.log("");

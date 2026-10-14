@@ -18,7 +18,7 @@ let currentSession = `opencode-${process.pid}`;
 const send = (address, action, payload) =>
   sendIpcRequest(address, { action, payload }, 0).catch(() => null);
 
-async function announce(event, sessionId, cwd) {
+async function announce(event, sessionId, cwd, name) {
   // Headless guard: if invoked inside a mesh headless turn, avoid duplicate presence cycles
   if (process.env.MESH_AGENT) return;
   const id = sessionId || currentSession;
@@ -30,6 +30,7 @@ async function announce(event, sessionId, cwd) {
     pid: process.pid,
     cwd: cwd || process.cwd(),
     origin: "interactive",
+    name: name || undefined,
     notify: event === "start" || event === "end", // plugins have no hook-side toast
   });
 }
@@ -56,7 +57,10 @@ export default async function opencodePresencePlugin(ctx = {}) {
       const p = event?.properties || {};
       switch (event?.type) {
         case "session.created":
-          return announce("start", p.info?.id, p.info?.directory);
+          return announce("start", p.info?.id, p.info?.directory, p.info?.title);
+        case "session.updated":
+          if (p.info?.title) return announce("rename", p.info.id, p.info.directory, p.info.title);
+          return;
         case "session.status":
           if (p.status?.type === "busy") return announce("busy", p.sessionID);
           return;

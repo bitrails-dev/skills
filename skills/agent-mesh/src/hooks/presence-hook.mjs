@@ -15,6 +15,7 @@ import {
   emitJson,
   resolveTrueHarnessPid,
   isBackgroundSession,
+  resolveSessionName,
   appendHookAuditLog,
   notifyHookPresence,
   getMeshHome,
@@ -81,6 +82,7 @@ async function main() {
   const cwd = input.cwd || process.cwd();
   const address = resolveIpcAddress(cwd);
   const pid = resolveTrueHarnessPid(sessionId, { harness, event: eventName });
+  const name = resolveSessionName(harness, sessionId, input);
 
   // Background/forked/daemon processes are not user terminals: stay silent (no session, no toast).
   if (isBackgroundSession(sessionId)) {
@@ -101,6 +103,7 @@ async function main() {
             pid,
             cwd,
             origin: "interactive",
+            name,
           },
         }, 0, { timeoutMs: 800 });
         ok = res?.ok ?? false;
@@ -147,6 +150,7 @@ async function main() {
             pid,
             cwd,
             origin: "interactive",
+            name,
           },
         }, 0, { timeoutMs: 800 });
         ok = res?.ok ?? false;
@@ -224,7 +228,7 @@ async function main() {
           // Announce idle
           await sendIpcRequest(address, {
             action: "session_event",
-            payload: { harness, sessionId, event: "idle", pid, cwd },
+            payload: { harness, sessionId, event: "idle", pid, cwd, name },
           }, 0, { timeoutMs: 800 }).catch(() => {});
 
           appendHookAuditLog({

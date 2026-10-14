@@ -6,6 +6,9 @@ import {
   mkdirSync,
   statSync,
   renameSync,
+  openSync,
+  readSync,
+  closeSync,
 } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -158,6 +161,51 @@ export function getMeshHome() {
  * @returns {number}
  */
 const BACKGROUND_CMD = /daemon\s+run|--fork-session|--agent|(?:^|\s)(?:-p|--print)(?:\s|$)/;
+
+/**
+ * Best-effort human-readable session name: Claude transcript custom/AI title, Codex thread name.
+ * Never throws; returns null when the session has no name yet.
+ *
+ * @param {string} harness
+ * @param {string} sessionId
+ * @param {{ transcript_path?: string }} [input]
+ * @returns {string|null}
+ */
+export function resolveSessionName(harness, sessionId, input = {}) {
+  const tail = (p, bytes) => {
+    const size = statSync(p).size;
+    const fd = openSync(p, "r");
+    try {
+      const len = Math.min(size, bytes);
+      const buf = Buffer.alloc(len);
+      readSync(fd, buf, 0, len, size - len);
+      return buf.toString("utf8");
+    } finally {
+      closeSync(fd);
+    }
+  };
+  try {
+    if (harness === "claude" && input.transcript_path && existsSync(input.transcript_path)) {
+      let custom = null;
+      let ai = null;
+      for (const line of tail(input.transcript_path, 512 * 1024).split("\n")) {
+        if (line.includes('"custom-title"')) custom = JSON.parse(line).customTitle || custom;
+        else if (line.includes('"ai-title"')) ai = JSON.parse(line).aiTitle || ai;
+      }
+      return custom || ai || null;
+    }
+    if (harness === "codex") {
+      const idx = join(homedir(), ".codex", "session_index.jsonl");
+      if (!existsSync(idx)) return null;
+      let name = null;
+      for (const line of tail(idx, 256 * 1024).split("\n")) {
+        if (line.includes(sessionId)) name = JSON.parse(line).thread_name || name;
+      }
+      return name;
+    }
+  } catch {}
+  return null;
+}
 
 /**
  * True when the session's harness process was identified as a background (non-terminal) process.

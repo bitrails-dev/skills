@@ -246,7 +246,7 @@ export class AgentMeshBroker {
       }
 
       case "session_event": {
-        const { harness, sessionId, event, pid, cwd, origin, notify } = req.payload;
+        const { harness, sessionId, event, pid, cwd, origin, notify, name } = req.payload;
         const resolvedHarness = this.resolveAgent(harness);
         const res = this.repo.updateSessionEvent({
           harness: resolvedHarness,
@@ -255,6 +255,7 @@ export class AgentMeshBroker {
           pid: Number(pid) || null,
           cwd: cwd || this.cwd,
           origin: origin || "interactive",
+          name: name || null,
         });
 
         // Dual-writer rule: if a human starts interacting with a session currently used by a headless turn, abort it
@@ -277,6 +278,17 @@ export class AgentMeshBroker {
           pid: Number(pid) || null,
           force: Boolean(notify),
         });
+
+        // Name changes after registration (e.g. /rename) are announced; initial naming at start is not.
+        if (res.renamed && event !== "start") {
+          this.notifyDesktop({
+            harness: resolvedHarness,
+            event: "renamed",
+            state: `${res.renamed.from ? `"${res.renamed.from}" -> ` : ""}"${res.renamed.to}"`,
+            sessionId,
+            pid: Number(pid) || null,
+          });
+        }
 
         return { ok: true, state: res.state };
       }
@@ -682,7 +694,7 @@ Process the message(s) above, take appropriate action, and reply via the CLI.`;
     if (process.platform !== "win32") return;
 
     // Hooks announce session start/end themselves; the broker only raises daemon/inbox/kill events.
-    const notifyEvents = new Set(["inbox", "broker_start", "broker_stop", "killed"]);
+    const notifyEvents = new Set(["inbox", "broker_start", "broker_stop", "killed", "renamed"]);
     if (!notifyEvents.has(event) && !(force && (event === "start" || event === "end"))) return;
 
     const labels = {
@@ -690,6 +702,7 @@ Process the message(s) above, take appropriate action, and reply via the CLI.`;
       broker_stop: "Broker stopped",
       inbox: "New message",
       killed: "Session ended",
+      renamed: "Session renamed",
       start: "Session started",
       end: "Session ended",
     };
