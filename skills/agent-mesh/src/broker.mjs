@@ -25,7 +25,7 @@ import { isProcessAlive } from "./harnesses/shared/process.mjs";
 import { TuiScanner } from "./presence/tui-scanner.mjs";
 import { watchTranscripts, pollExternalSessions } from "./presence/name-watch.mjs";
 import { McpDedupe } from "./presence/mcp-dedupe.mjs";
-import { WakePolicy } from "./presence/wake-policy.mjs";
+import { WakePolicy, readWakeConfig } from "./presence/wake-policy.mjs";
 
 export { isProcessAlive };
 
@@ -76,8 +76,10 @@ export class AgentMeshBroker {
       processSource: options.processSource, // injectable for tests
       processInfo: options.processInfo,
     });
+    this.wakeInjectorOverrides = options.wakeInjectors ?? null;
     this.mcp = new McpDedupe({ repo: this.repo, notify: (p) => this.notifyDesktop(p), graceMs: options.mcpGraceMs });
     this.wake = new WakePolicy({ meshHome: process.env.MESH_HOME || homedir(), ...options.wake });
+    this.injectors = new Map(); // harness id -> running wake injector (descriptor delivery.wake.injector)
     this.waiters = new Map(); // session id -> { pid, seen } (single listener per session)
     this.waitingToasts = new Map(); // session id -> last "message waiting" toast time
     this.transcripts = new Map(); // sessionId -> { harness, path, mtime } for /rename detection
@@ -94,6 +96,46 @@ export class AgentMeshBroker {
     this.registerDriver("antigravity", createAntigravityDriver());
     this.registerDriver("codex", createCodexDriver());
     this.registerDriver("acp", createAcpDriver());
+  }
+
+  /**
+   * Starts/stops harness wake injectors (descriptor `delivery.wake.injector`) to match the opt-in config
+   * (<meshHome>/.agent-mesh/wake.json, or `options.wakeInjectors` in tests). Cheap enough for the 30s tick.
+   */
+  syncWakeInjectors() {
+    const meshHome = process.env.MESH_HOME || homedir();
+    const config = this.wakeInjectorOverrides ?? readWakeConfig(meshHome);
+    for (const h of registry.all()) {
+      const factory = h.delivery.wake?.injector;
+      if (!factory) continue;
+      const enabled = Boolean(config[h.id]) && this.running;
+      const running = this.injectors.get(h.id);
+      if (enabled && !running) {
+        const inj = factory({ api: this.wakeApi(h.id), options: { ...(typeof config[h.id] === "object" ? config[h.id] : {}), log: () => {} } });
+        inj.start();
+        this.injectors.set(h.id, inj);
+      } else if (!enabled && running) {
+        running.stop();
+        this.injectors.delete(h.id);
+      }
+    }
+  }
+
+  /** The narrow API an injector gets: strict, policy-checked claims only. */
+  wakeApi(harness) {
+    return {
+      sessions: () => this.repo.listLiveSessions().filter((s) => s.harness === harness && s.origin === "interactive"),
+      hasWakeMail: (sessionId) => this.repo.hasWakeMail(harness, sessionId),
+      claim: (sessionId) => {
+        const verdict = this.wake.check(sessionId);
+        if (!verdict.ok) return [];
+        const messages = this.repo.claimInboxForSession(harness, sessionId, { wakeOnly: true });
+        if (messages.length > 0) this.wake.record(sessionId);
+        return messages;
+      },
+      ack: (ids) => ids.forEach((id) => this.repo.markDelivered(id)),
+      release: (ids) => ids.forEach((id) => this.repo.restorePending(id)),
+    };
   }
 
   /**
@@ -290,8 +332,10 @@ export class AgentMeshBroker {
     // 5. Start maintenance timer (30s) for background lease reaping and dispatch
     this.maintenanceTimer = setInterval(() => {
       this.reapStaleLeases();
+      this.syncWakeInjectors();
       this.scheduleDispatch();
     }, 30000);
+    this.syncWakeInjectors();
 
     // 5b. PID watch: one kill(pid, 0) per live session every 2s (cheap) reports killed sessions
     this.pidWatchTimer = setInterval(() => {
@@ -954,6 +998,8 @@ Process the message(s) above, take appropriate action, and reply via the CLI.`;
 
     if (this.pidWatchTimer) clearInterval(this.pidWatchTimer);
     this.mcp.stop();
+    for (const inj of this.injectors.values()) inj.stop();
+    this.injectors.clear();
     if (this.maintenanceTimer) {
       clearInterval(this.maintenanceTimer);
       this.maintenanceTimer = null;

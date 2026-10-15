@@ -264,6 +264,20 @@ export class MeshRepository {
       .all(Date.now(), agentId, sessionId, sessionId, untargeted);
   }
 
+  /** True when a session has pending mail that is allowed to wake it (strict claim rules, no side effects). */
+  hasWakeMail(agentId, sessionId) {
+    const primary = this.primaryInteractiveSession(agentId);
+    const untargeted = primary === null || primary === sessionId ? 1 : 0;
+    return Boolean(
+      this.db
+        .prepare(
+          `SELECT 1 FROM messages WHERE to_agent = ? AND status = 'pending' AND (kind IN ('ask', 'reply') OR priority >= 1)
+           AND (to_session = ? OR (to_session IS NULL AND ? = 1)) LIMIT 1`
+        )
+        .get(agentId, sessionId, untargeted)
+    );
+  }
+
   /**
    * Most recent ticket delivered (or being delivered) to an agent within the window: the parent of anything
    * that agent sends next, so interactive sessions cannot ping-pong without hitting the hop limit.

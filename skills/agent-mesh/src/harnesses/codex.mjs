@@ -3,7 +3,9 @@ import { homedir } from "node:os";
 import { existsSync } from "node:fs";
 import { readSqliteRow, execSqlite } from "./shared/sqlite.mjs";
 import { tailText } from "./shared/transcript.mjs";
-import { DEFAULT_TTL_MS, classifyCmdline } from "./shared/process.mjs";
+import { DEFAULT_TTL_MS, classifyCmdline, getMeshHome } from "./shared/process.mjs";
+import { createCodexInjector } from "./codex-wake.mjs";
+import { readWakeConfig, writeWakeConfig, wakeConfigPath } from "../presence/wake-policy.mjs";
 import {
   readJsonSafe,
   installNestedHooks,
@@ -120,6 +122,27 @@ export default {
         return diagnoseResult(ID, p.targetPath, hasNestedHooks(read.data));
       },
     },
+    // Opt-in (`mesh --init codex --wake`): enables the broker-side turn/start injector for idle threads.
+    {
+      kind: "wake",
+      optIn: true,
+      script: "mesh-wake-hook.mjs", // unused: the injector runs inside the broker
+      resolvePaths: () => ({ targetPath: wakeConfigPath(getMeshHome()) }),
+      install(p) {
+        const cfg = readWakeConfig(getMeshHome());
+        if (cfg[ID] === true) return { ok: true, modified: false };
+        writeWakeConfig(getMeshHome(), { ...cfg, [ID]: true });
+        return { ok: true, modified: true };
+      },
+      uninstall() {
+        const cfg = readWakeConfig(getMeshHome());
+        if (!(ID in cfg)) return { ok: true, modified: false };
+        delete cfg[ID];
+        writeWakeConfig(getMeshHome(), cfg);
+        return { ok: true, modified: true };
+      },
+      diagnose: (p) => diagnoseResult(ID, p.targetPath, readWakeConfig(getMeshHome())[ID] === true),
+    },
     // MCP servers are spawned per thread by the shared daemon (parent = daemon, not the TUI): tools only,
     // no presence announcement (hooks + scanner own presence).
     tomlMcpSource({
@@ -145,12 +168,14 @@ export default {
       launcher: "broker",
       survivesTurnEnd: true,
       needsPermission: false,
+      // Broker-side injector (opt-in via wake.json, see codex-wake.mjs); started by the broker generically.
+      injector: createCodexInjector,
       candidate: {
         tier: "push",
         launcher: "broker",
         survivesTurnEnd: true,
         needsPermission: false,
-        evidence: { version: "codex 0.162.1", date: "2026-10-15", verified: false, basis: "app-server protocol schema + isolated throwaway daemon" },
+        evidence: { version: "codex 0.162.1", date: "2026-10-15", verified: true, basis: "observer client turn/start into an idle thread of a throwaway app-server daemon (tests/codex-wake-test.mjs); not the live TUI" },
       },
     },
   },

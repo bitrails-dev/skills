@@ -7,7 +7,7 @@
  * with a "message waiting" toast as the floor.
  */
 
-import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 
 export class WakePolicy {
@@ -60,4 +60,22 @@ export class WakePolicy {
   snapshot() {
     return { muted: this.isMuted(), budget: this.budget, windowMs: this.windowMs };
   }
+}
+
+/** Broker-side opt-in config for harness injectors (`mesh --init <harness> --wake`): { "<harness>": true }. */
+export const wakeConfigPath = (meshHome) => join(meshHome, ".agent-mesh", "wake.json");
+
+export function readWakeConfig(meshHome) {
+  try {
+    const parsed = JSON.parse(readFileSync(wakeConfigPath(meshHome), "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function writeWakeConfig(meshHome, config) {
+  const path = wakeConfigPath(meshHome);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(config, null, 2) + "\n", "utf8");
 }
