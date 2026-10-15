@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { existsSync } from "node:fs";
 import { readSqliteRow, execSqlite } from "./shared/sqlite.mjs";
 import { DEFAULT_TTL_MS, looksInteractive } from "./shared/process.mjs";
-import { readJsonSafe, backupOnce, atomicWriteJson, buildHookCommand, diagnoseResult } from "./shared/install.mjs";
+import { readJsonSafe, backupOnce, atomicWriteJson, buildHookCommand, diagnoseResult, jsonMcpSource } from "./shared/install.mjs";
 
 const ID = "antigravity";
 const BLOCK = "agent-mesh-presence";
@@ -77,6 +77,14 @@ export default {
       uninstall,
       diagnose,
     },
+    jsonMcpSource({
+      id: ID,
+      // global path as written by `agy mcp add`; the project path is unverified
+      resolvePaths: ({ global, root }) => ({
+        targetPath: global ? join(homedir(), ".gemini", "config", "mcp_config.json") : join(root, ".agents", "mcp_config.json"),
+      }),
+      entryFor: (launch) => ({ ...launch, disabled: false }),
+    }),
   ],
   pid: "walk",
   name: { resolve: resolveName, watch: { kind: "sqlite-poll" } },

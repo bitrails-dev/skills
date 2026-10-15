@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { existsSync } from "node:fs";
-import { writeLoader, backupOnce, removeFile, diagnoseResult } from "./shared/install.mjs";
+import { writeLoader, backupOnce, removeFile, diagnoseResult, jsonMcpSource } from "./shared/install.mjs";
 
 const ID = "pi";
 
@@ -36,6 +36,13 @@ export default {
       uninstall: (p) => ({ ok: true, modified: removeFile(p.targetPath) }),
       diagnose: (p) => diagnoseResult(ID, p.targetPath, existsSync(p.targetPath)),
     },
+    jsonMcpSource({
+      id: ID,
+      // as written by `pi mcp add` (global) / `pi mcp add -l` (project, trusted projects only)
+      resolvePaths: ({ global, root }) => ({
+        targetPath: global ? join(homedir(), ".pi", "agent", "mcp.json") : join(root, ".pi", "mcp.json"),
+      }),
+    }),
   ],
   pid: "direct", // the extension runs inside the harness: process.pid is the harness
   name: { watch: { kind: "event" } }, // session_info_changed -> rename event

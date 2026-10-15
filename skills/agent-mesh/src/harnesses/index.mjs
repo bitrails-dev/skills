@@ -25,7 +25,9 @@ import { DEFAULT_TTL_MS } from "./shared/process.mjs";
  *
  * @typedef {object} PresenceSource
  * @property {"hook"|"plugin"|"extension"|"process"|"mcp"} kind
- * @property {string} [script]  entry script file name under src/hooks/ (hook/plugin/extension)
+ * @property {boolean} [optIn]  only installed on request (`installHarness(..., {mcp: true})`); always removed on uninstall
+ * @property {boolean} [announce]  mcp only: false when the shim must not announce presence (shared-daemon host)
+ * @property {string} [script]  entry script path relative to src/hooks/ (hook/plugin/extension/mcp)
  * @property {(opts: {global: boolean, root: string}) => PresencePaths} [resolvePaths]
  * @property {(paths: PresencePaths, scriptAbsPath: string) => InstallResult} [install]  idempotent
  * @property {(paths: PresencePaths) => InstallResult} [uninstall]
@@ -75,7 +77,7 @@ export function validateDescriptor(h) {
   if (!Array.isArray(h.presence) || h.presence.length === 0) fail("needs at least one presence source");
   for (const s of h.presence) {
     if (!["hook", "plugin", "extension", "process", "mcp"].includes(s.kind)) fail(`bad presence kind ${s.kind}`);
-    if (["hook", "plugin", "extension"].includes(s.kind)) {
+    if (["hook", "plugin", "extension", "mcp"].includes(s.kind)) {
       for (const f of ["script", "resolvePaths", "install", "uninstall", "diagnose"]) if (!s[f]) fail(`${s.kind} source needs ${f}`);
     }
   }

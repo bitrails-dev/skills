@@ -97,7 +97,7 @@ export function isBackgroundSession(sessionId) {
 }
 
 /** Climbs from `directPid` past shell wrappers. Returns { pid, cmdline }. Windows pays ~1-2s once per session. */
-function walkPastShells(directPid) {
+export function walkPastShells(directPid) {
   let resolvedPid = directPid;
   let cmdline = "";
   try {

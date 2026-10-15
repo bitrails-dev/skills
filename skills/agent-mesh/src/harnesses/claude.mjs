@@ -8,6 +8,7 @@ import {
   uninstallNestedHooks,
   hasNestedHooks,
   diagnoseResult,
+  jsonMcpSource,
 } from "./shared/install.mjs";
 
 const ID = "claude";
@@ -51,6 +52,12 @@ export default {
         return diagnoseResult(ID, p.targetPath, hasNestedHooks(read.data));
       },
     },
+    jsonMcpSource({
+      id: ID,
+      // user scope lives in ~/.claude.json, project scope in .mcp.json (as written by `claude mcp add`)
+      resolvePaths: ({ global, root }) => ({ targetPath: global ? join(homedir(), ".claude.json") : join(root, ".mcp.json") }),
+      entryFor: (launch) => ({ type: "stdio", ...launch, env: {} }),
+    }),
   ],
   pid: "walk",
   name: { resolve: resolveName, watch: { kind: "transcript-mtime" } },

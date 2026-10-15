@@ -27,6 +27,24 @@ Instead of rigid 1-to-1 RPC relays, agents interact via an atomic local Broker d
 - **ACP Agents**: Any Agent Client Protocol-compliant agent via generic `AcpDriver`. *(Experimental: method names pending upstream ACP standard stabilization.)*
 - **Declarative CLIs**: Aider, custom LLM CLIs via 30-line `resumeDriver`.
 
+## Live Presence & MCP Per Harness
+
+Presence (who is online, names, exit) comes from hooks/plugins plus a broker-side process scanner. Every harness
+also has an optional, opt-in MCP shim (`mesh --init --mcp`, removed by `mesh --uninstall`) that gives agents the
+tools `mesh_send`, `mesh_ask`, `mesh_inbox`, `mesh_status`; the Stop-hook/plugin inbox injection keeps working
+without it. Sessions announced by both hooks and MCP collapse into one row and one start toast.
+
+| Harness | Presence sources | MCP entry (opt-in) | MCP presence |
+|---|---|---|---|
+| `claude` | settings.json hooks, transcript rename watch | `~/.claude.json` / `.mcp.json` `mcpServers` | yes (parent = claude) |
+| `antigravity` (`agy`) | hooks.json hooks, TUI scanner, conversation db poll | `~/.gemini/config/mcp_config.json` | yes (parent = agy) |
+| `codex` | hooks.json hooks (run in the shared app-server), TUI scanner, thread db poll | `config.toml` `[mcp_servers.agent-mesh]` | tools only (servers are hosted by the daemon) |
+| `opencode` | plugin (`opencode.json` `plugin`) | `opencode.json` `mcp` | yes |
+| `pi` | extension (`~/.pi/agent/extensions`) | `~/.pi/agent/mcp.json` | yes |
+
+Adding a harness is one descriptor file in `src/harnesses/` plus a registry line; see `docs/ADAPTERS.md`
+("How to add a harness"). Design notes, MCP spawn behaviour per harness and the Codex app-server study live there too.
+
 ## Quick Start CLI
 
 ```powershell

@@ -10,6 +10,7 @@ import {
   uninstallNestedHooks,
   hasNestedHooks,
   diagnoseResult,
+  tomlMcpSource,
 } from "./shared/install.mjs";
 
 const ID = "codex";
@@ -119,6 +120,15 @@ export default {
         return diagnoseResult(ID, p.targetPath, hasNestedHooks(read.data));
       },
     },
+    // MCP servers are spawned per thread by the shared daemon (parent = daemon, not the TUI): tools only,
+    // no presence announcement (hooks + scanner own presence).
+    tomlMcpSource({
+      id: ID,
+      announce: false,
+      resolvePaths: ({ global, root }) => ({
+        targetPath: global ? join(homedir(), ".codex", "config.toml") : join(root, ".codex", "config.toml"),
+      }),
+    }),
   ],
   // Hooks run inside the shared `codex app-server` daemon: the default classifier reports that as
   // shared-host (no pid), and the scanner supplies the TUI pid instead.

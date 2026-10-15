@@ -183,3 +183,134 @@ export function removeFile(filePath) {
 export function diagnoseResult(harness, targetPath, installed, status) {
   return { harness, targetPath, status: status ?? (installed ? "Installed (ACTIVE)" : "Not installed"), installed };
 }
+
+// ---- MCP server entries (opt-in presence source "mcp") ---------------------------------------------
+
+/** Server name every harness config uses for the agent-mesh shim. */
+export const MCP_SERVER_NAME = "agent-mesh";
+
+/** Command + args that launch the shim for a harness. Forward slashes survive every shell. */
+export function mcpLaunch(scriptAbsPath, harnessId) {
+  return { command: "node", args: [scriptAbsPath.replace(/\\/g, "/"), "--harness", harnessId] };
+}
+
+const isPlainObject = (v) => v && typeof v === "object" && !Array.isArray(v);
+
+/**
+ * Adds/updates `<key>.agent-mesh` in a JSON config (Claude `.mcp.json`/`~/.claude.json`, Pi `mcp.json`,
+ * agy `mcp_config.json`: key `mcpServers`; OpenCode `opencode.json`: key `mcp`). Other entries are kept.
+ */
+export function installJsonMcp(filePath, key, entry) {
+  const read = readJsonSafe(filePath);
+  if (!read.ok) return { ok: false, error: read.error, modified: false };
+  const data = read.data;
+  if (data[key] !== undefined && !isPlainObject(data[key])) {
+    return { ok: false, error: `${filePath}: "${key}" is not an object`, modified: false };
+  }
+  data[key] ??= {};
+  if (JSON.stringify(data[key][MCP_SERVER_NAME]) === JSON.stringify(entry)) return { ok: true, modified: false };
+  data[key][MCP_SERVER_NAME] = entry;
+  backupOnce(filePath);
+  atomicWriteJson(filePath, data);
+  return { ok: true, modified: true };
+}
+
+export function uninstallJsonMcp(filePath, key) {
+  const read = readJsonSafe(filePath);
+  if (!read.ok) return { ok: false, error: read.error, modified: false };
+  if (!read.exists || !isPlainObject(read.data[key]) || !(MCP_SERVER_NAME in read.data[key])) return { ok: true, modified: false };
+  delete read.data[key][MCP_SERVER_NAME];
+  atomicWriteJson(filePath, read.data);
+  return { ok: true, modified: true };
+}
+
+export function hasJsonMcp(filePath, key) {
+  const read = readJsonSafe(filePath);
+  return Boolean(read.ok && isPlainObject(read.data[key]) && MCP_SERVER_NAME in read.data[key]);
+}
+
+const TOML_BEGIN = "# agent-mesh:begin";
+const TOML_END = "# agent-mesh:end";
+// `[mcp_servers.agent-mesh]` and sub-tables such as `[mcp_servers.agent-mesh.env]`
+const tomlHeader = /^\[mcp_servers\.(?:"agent-mesh"|agent-mesh)(?:\.[^\]]+)?\]$/;
+const tomlMainHeader = /^\[mcp_servers\.(?:"agent-mesh"|agent-mesh)\]$/;
+
+/** Removes the managed block and any `[mcp_servers.agent-mesh*]` tables (e.g. added by `codex mcp add`). */
+function stripTomlMcp(text) {
+  const out = [];
+  let skipping = false;
+  let inBlock = false;
+  for (const line of text.split(/\r?\n/)) {
+    if (line.trim() === TOML_BEGIN) { inBlock = true; continue; }
+    if (line.trim() === TOML_END) { inBlock = false; continue; }
+    if (inBlock) continue;
+    if (/^\s*\[/.test(line)) skipping = tomlHeader.test(line.trim());
+    if (!skipping) out.push(line);
+  }
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").replace(/\s+$/, "");
+}
+
+const tomlStr = (s) => JSON.stringify(s);
+
+/** Codex config.toml: managed `[mcp_servers.agent-mesh]` block between marker comments (no TOML parser). */
+export function installTomlMcp(filePath, { command, args }) {
+  const existing = existsSync(filePath) ? readFileSync(filePath, "utf8") : "";
+  const block = [
+    TOML_BEGIN,
+    `[mcp_servers.${MCP_SERVER_NAME}]`,
+    `command = ${tomlStr(command)}`,
+    `args = [${args.map(tomlStr).join(", ")}]`,
+    TOML_END,
+  ].join("\n");
+  const base = stripTomlMcp(existing);
+  const next = `${base ? `${base}\n\n` : ""}${block}\n`;
+  if (next === existing) return { ok: true, modified: false };
+  backupOnce(filePath);
+  mkdirSync(dirname(filePath), { recursive: true });
+  writeFileSync(filePath, next, "utf8");
+  return { ok: true, modified: true };
+}
+
+export function uninstallTomlMcp(filePath) {
+  if (!existsSync(filePath)) return { ok: true, modified: false };
+  const existing = readFileSync(filePath, "utf8");
+  const stripped = stripTomlMcp(existing);
+  if (stripped === existing.replace(/\s+$/, "")) return { ok: true, modified: false };
+  writeFileSync(filePath, stripped ? `${stripped}\n` : "", "utf8");
+  return { ok: true, modified: true };
+}
+
+export function hasTomlMcp(filePath) {
+  if (!existsSync(filePath)) return false;
+  return readFileSync(filePath, "utf8").split(/\r?\n/).some((l) => tomlMainHeader.test(l.trim()));
+}
+
+const MCP_SCRIPT = "../mcp/mesh-mcp.mjs"; // relative to src/hooks (see HOOKS_DIR)
+
+/** Opt-in `mcp` presence source for harnesses configured through a JSON file. */
+export function jsonMcpSource({ id, resolvePaths, key = "mcpServers", entryFor = (launch) => launch, announce = true }) {
+  return {
+    kind: "mcp",
+    optIn: true,
+    announce,
+    script: MCP_SCRIPT,
+    resolvePaths,
+    install: (p, script) => installJsonMcp(p.targetPath, key, entryFor(mcpLaunch(script, id))),
+    uninstall: (p) => uninstallJsonMcp(p.targetPath, key),
+    diagnose: (p) => diagnoseResult(id, p.targetPath, hasJsonMcp(p.targetPath, key)),
+  };
+}
+
+/** Opt-in `mcp` presence source for Codex (`config.toml` managed block). */
+export function tomlMcpSource({ id, resolvePaths, announce = true }) {
+  return {
+    kind: "mcp",
+    optIn: true,
+    announce,
+    script: MCP_SCRIPT,
+    resolvePaths,
+    install: (p, script) => installTomlMcp(p.targetPath, mcpLaunch(script, id)),
+    uninstall: (p) => uninstallTomlMcp(p.targetPath),
+    diagnose: (p) => diagnoseResult(id, p.targetPath, hasTomlMcp(p.targetPath)),
+  };
+}

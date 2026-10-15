@@ -1,6 +1,6 @@
 # Harness adapters: plan
 
-Status: Phase 1 (adapter refactor) and Phase 2 (Codex host study, section 6) done. Section 5 (MCP shim) is a plan.
+Status: Phase 1 (adapter refactor), Phase 2 (Codex host study, section 6) and Phase 3 (MCP shim, section 5) done.
 
 Goal: adding a harness = one file `src/harnesses/<id>.mjs` + one line in `src/harnesses/index.mjs`
 + fixtures in the contract test. Broker and installer contain zero `if (harness === "...")`.
@@ -55,8 +55,9 @@ src/harnesses/
   index.mjs          registry: all, ids, get, canonicalId, byExe, endTtl, register, validateDescriptor
   claude.mjs  codex.mjs  antigravity.mjs  opencode.mjs  pi.mjs
   shared/  sqlite.mjs  transcript.mjs  process.mjs  install.mjs
-src/presence/        tui-scanner.mjs  name-watch.mjs  announce.mjs
-tests/harness-contract-test.mjs
+src/presence/        tui-scanner.mjs  name-watch.mjs  announce.mjs  mcp-dedupe.mjs
+src/mcp/             mesh-mcp.mjs
+tests/harness-contract-test.mjs  tests/mcp-shim-test.mjs
 ```
 
 Behavior preserved: IPC payloads, marker file names, poll cadences (3s scan, 5s external, 2s pid
@@ -74,25 +75,38 @@ reinstall -> uninstall with foreign config preserved (temp project root); name r
 pid exit; TUI classification from `fixtures.tui`; hook command-line classification from
 `fixtures.cmdlines`. Plus a registry-wide id/alias uniqueness check.
 
-## 5. MCP shim design (`src/mcp/mesh-mcp.mjs`, zero deps)
+## 5. MCP shim (`src/mcp/mesh-mcp.mjs`, zero deps) - as built
 
-- Transport: stdio, newline-delimited JSON-RPC 2.0. Methods: `initialize` (reply
-  `protocolVersion` echoing client's if supported else latest we know, `capabilities:{tools:{}}`,
-  `serverInfo`), `notifications/initialized`, `ping`, `tools/list`, `tools/call`; unknown request ->
-  `-32601`; unknown notification ignored.
-- Identity: harness from `initialize.params.clientInfo.name` mapped through registry aliases/`mcpClientNames`
-  (new optional descriptor field), fallback env `MESH_HARNESS`/argv `--harness`. Session id
-  `mcp:<harness>:<ppid>`. pid = `process.ppid` (walked past shells via `shared/process.mjs` when the
-  descriptor says `walk`). cwd = `process.cwd()`.
-- Presence: after `initialize` -> `session_event start (origin:"interactive", via:"mcp", pid:"provided")`;
-  `tools/call` -> `busy`/`idle`; stdin EOF/SIGTERM -> `end`. Broker PID watcher is the backstop.
-- Tools: `mesh_send {to, body}`, `mesh_ask {to, body, timeoutMs?}`, `mesh_inbox {}` (claim+ack),
-  `mesh_status {}`; each is one `sendIpcRequest` (existing actions send/ask/claim_inbox/ack/status).
-- Dedupe key: `(harness, pid)`. Broker `session_event` with `via:"mcp"` and a live row for same
-  harness+pid reuses that row (merge name/cwd), never creates a second row or second start toast;
-  reverse order (hook after MCP) also rebinds like `bindTui`. Implemented once in `updateSessionEvent`
-  callers (`presence/dedupe.mjs`), not per harness.
-- Install: new `PresenceSource{kind:"mcp"}` per descriptor, same install/uninstall/diagnose contract.
+- Transport: stdio, newline-delimited JSON-RPC 2.0, stdout carries protocol messages only. Methods:
+  `initialize` (echoes the client's `protocolVersion` when supported, else `2025-06-18`;
+  `capabilities: {tools: {}}`), `notifications/initialized`, `ping`, `tools/list`, `tools/call`;
+  unknown requests get `-32601`, unknown notifications are ignored.
+- Tools (one broker IPC call each): `mesh_send {to, body}`, `mesh_ask {to, body}` (reply arrives in the
+  inbox), `mesh_inbox {}` (claim + ack, formatted like the hook injection), `mesh_status {}`.
+  Errors (bad args, broker down) come back as `isError` tool results, never as crashes.
+- Identity: harness from `--harness <id>` (written by the installer), fallback `clientInfo.name`
+  (`harnessFromClientName`: `pi`, `opencode`, `codex-mcp-client`, `claude-code` resolve). Session id
+  `mcp:<harness>:<pid>`; pid = parent process, walked past shell wrappers when the descriptor's `pid`
+  strategy is `walk` (Claude, agy), plain parent when `direct`. `MESH_AGENT` (headless mesh turn) or an
+  unknown harness: tools only, no presence.
+- Presence: `start` after `initialized` (or first `tools/list`), `end` on stdin EOF / SIGTERM, both with
+  `via: "mcp"`. The descriptor's `mcp` source can set `announce: false` (Codex: servers are spawned by the
+  shared daemon, parent = daemon, so the shim only serves tools; hooks + scanner own presence).
+- Dedupe (`src/presence/mcp-dedupe.mjs`, key `(harness, pid)`): MCP events are ignored while another live
+  row owns the pid; otherwise the `mcp:` row is used and its start toast is deferred by a grace window
+  (6s) so a hook that claims the pid first takes over (the `mcp:` row is closed silently, the hook
+  toasts itself). MCP-only presence toasts once at start and once at end.
+- Install (opt-in, `mesh --init --mcp` / `installHarness(..., {mcp: true})`; uninstall always removes it):
+
+| Harness | File (global / project) | Entry |
+|---|---|---|
+| claude | `~/.claude.json` / `<root>/.mcp.json`, key `mcpServers` | `{type:"stdio", command, args, env:{}}` |
+| codex | `~/.codex/config.toml` / `<root>/.codex/config.toml` | managed `[mcp_servers.agent-mesh]` block between `# agent-mesh:begin/end` markers |
+| antigravity | `~/.gemini/config/mcp_config.json` / `<root>/.agents/mcp_config.json` (project path unverified) | `{command, args, disabled:false}` |
+| opencode | `opencode.json`, key `mcp` | `{type:"local", command:[node, script, --harness, opencode], enabled:true}` |
+| pi | `~/.pi/agent/mcp.json` / `<root>/.pi/mcp.json` | `{command, args}` |
+
+  The Stop-hook / plugin inbox injection stays installed and is the fallback where MCP is absent.
 
 ## 6. Evidence tables (Deliverables B and C)
 
@@ -107,10 +121,10 @@ throwaway daemon/stdio server under a temp `CODEX_HOME` with a logging MCP probe
 | Harness | Config | Spawn | Scope | Parent PID | Exits with TUI? | clientInfo.name | Notes |
 |---|---|---|---|---|---|---|---|
 | codex | `[mcp_servers.<name>]` in `config.toml` (command/args/env, or url) | at `thread/start`, before any turn (`mcpServer/startupStatus/updated` starting -> ready within ~0.2s); not at `initialize` | per thread (status events carry `threadId`); cwd = thread cwd | the app-server host: the shared daemon pid (37772 class) for TUI/daemon threads; stdio-embedded host in `--listen stdio://` | No. Survives `thread/unsubscribe` and client disconnect; dies at thread unload (`thread/closed`, default 60s after last subscriber and idle) or when the host dies (hard kill: no EOF/SIGTERM handler ran) | `codex-mcp-client` v0.162.1 | MCP shim therefore sees the daemon as parent, never the TUI: shim must key presence on thread, not parent pid. Embedded host for `codex --no-daemon` / `codex exec` not measured (needs a TTY / auth) |
-| claude | | | | | | | Phase 2b |
-| antigravity | | | | | | | Phase 2b |
-| opencode | | | | | | | Phase 2b |
-| pi | | | | | | | Phase 2b |
+| claude | `~/.claude.json` `mcpServers` (user) or `.mcp.json` (project, written by `claude mcp add`; first use of a project server needs the user's approval, per Claude docs, not observed) | eager: children of live sessions appeared ~3s after launch (03:27:19 -> 03:27:22); also re-spawned later on plugin reload | per session (two live claude.exe each had their own context-mode child) | the main `claude.exe` itself; `cmd.exe /c` only in between for `.cmd` shims (npx) | not tested (would need killing a user session); stdin-EOF semantics assumed | `claude-code` (documented, not observed) | observed on live user sessions, read-only |
+| antigravity | `~/.gemini/config/mcp_config.json` (`agy mcp add` in an isolated HOME), entry `{command, args, disabled}` | eager: child 1s after agy.exe start (10:49:25 -> 10:49:26) | per session (two live agy.exe each had their own canva child) | `agy.exe` directly (`cmd /c npx` wrapper for npx servers) | not tested | not observed (`agy mcp list` does not spawn) | project-scope config path unverified; scanner pid == shim pid, so rows merge |
+| opencode | `opencode.json` key `mcp` (`type: local`, `command: [..]`) | `opencode mcp list` spawns and connects; session-time spawn not observed | unverified | unverified (plugins run in-process, so the parent is expected to be the opencode process) | server got stdin EOF right after the list command finished | `opencode` 1.19.0 | isolated HOME probe |
+| pi | `~/.pi/agent/mcp.json` / `.pi/mcp.json` in trusted projects, key `mcpServers` (`pi mcp add` in an isolated HOME) | `pi mcp list` spawns and connects; session-time spawn not observed (exposure modes `codemode` default, `deferred`, `direct`, `hidden`) | unverified | unverified | stdin EOF when the client exits | `pi` 1.1.0 | isolated HOME probe; Pi supports MCP natively |
 
 ### C. Codex app-server host verdict
 
@@ -165,7 +179,9 @@ unload timing under a live observer in the real daemon (only isolated daemon tes
 8. Register in `src/harnesses/index.mjs` (one import, one entry in the `harnesses` array).
 9. Fill `fixtures` (`name.setup`, `tui`, `cmdlines`); the contract suite picks the harness up automatically.
 10. Run `npm test` twice; check `mesh hooks doctor <id>`; add a row to SKILL.md harness table.
-11. Add driver in `src/drivers/` only if the harness should receive headless turns (separate concern).
+11. If the harness has an MCP client, add an opt-in `mcp` presence source with `jsonMcpSource`/`tomlMcpSource`
+    (set `announce: false` when its servers are hosted by a shared daemon); otherwise document it as unsupported.
+12. Add driver in `src/drivers/` only if the harness should receive headless turns (separate concern).
 
 ## 8. Open decisions and risks
 
@@ -180,5 +196,11 @@ unload timing under a live observer in the real daemon (only isolated daemon tes
   SessionEnd fast path byte-for-byte.
 - R2: `MESH_HOOK_MATCHER` must keep matching legacy hook names or uninstall leaves orphans.
 - R3: circular imports (broker -> registry -> shared -> common); keep `shared/` free of broker imports.
-- R4: MCP-announced sessions racing hook-announced ones could double-toast before dedupe lands;
-  mitigated by landing dedupe in the broker before the shim ships.
+- R4 (mitigated): MCP- and hook-announced sessions are deduped in the broker (`mcp-dedupe.mjs`), covered by
+  `tests/mcp-shim-test.mjs`.
+- R5: Claude user-scope MCP lives in `~/.claude.json`, which running Claude sessions rewrite constantly; the
+  installer does a short read-modify-write with a `.bak`. A concurrent Claude write in that window could be
+  lost (project scope `.mcp.json` has no such risk).
+- R6: The shim adds a long-lived node process per session per harness (cheap: idle stdio, one pwsh walk at
+  start on Windows for `walk` harnesses).
+- D6 (decision needed): ship MCP as opt-in only (`--mcp`), or default-on per harness once validated?

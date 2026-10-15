@@ -24,6 +24,7 @@ import * as registry from "./harnesses/index.mjs";
 import { isProcessAlive } from "./harnesses/shared/process.mjs";
 import { TuiScanner } from "./presence/tui-scanner.mjs";
 import { watchTranscripts, pollExternalSessions } from "./presence/name-watch.mjs";
+import { McpDedupe } from "./presence/mcp-dedupe.mjs";
 
 export { isProcessAlive };
 
@@ -67,6 +68,7 @@ export class AgentMeshBroker {
       processSource: options.processSource, // injectable for tests
       processInfo: options.processInfo,
     });
+    this.mcp = new McpDedupe({ repo: this.repo, notify: (p) => this.notifyDesktop(p), graceMs: options.mcpGraceMs });
     this.transcripts = new Map(); // sessionId -> { harness, path, mtime } for /rename detection
     this.turnRetries = new Map(); // agentId -> consecutive failed turns
     this.messageRetries = new Map(); // ticketId -> retry attempts
@@ -250,10 +252,14 @@ export class AgentMeshBroker {
       }
 
       case "session_event": {
-        const { harness, sessionId, event, pid, cwd, origin, notify, name, transcript } = req.payload;
+        const { harness, sessionId, event, pid, cwd, origin, notify, name, transcript, via } = req.payload;
         if (transcript) this.transcripts.set(sessionId, { harness: this.resolveAgent(harness), path: transcript, mtime: 0 });
         if (event === "end" || event === "closed") this.transcripts.delete(sessionId);
         const resolvedHarness = this.resolveAgent(harness);
+        // MCP shim + hook/scanner presence for the same (harness, pid) share one row and one start toast
+        if (this.mcp.route({ harness: resolvedHarness, sessionId, pid: Number(pid) || null, via, event }).ignore) {
+          return { ok: true, state: "merged" };
+        }
         // TUI harnesses: attach the first real hook session to the TUI process found by the scanner
         const tui = this.tui.bind(resolvedHarness, sessionId, Number(pid) || null, event);
         if (tui.ignore) return { ok: true, state: "closed" };
@@ -767,6 +773,7 @@ Process the message(s) above, take appropriate action, and reply via the CLI.`;
     });
 
     if (this.pidWatchTimer) clearInterval(this.pidWatchTimer);
+    this.mcp.stop();
     if (this.maintenanceTimer) {
       clearInterval(this.maintenanceTimer);
       this.maintenanceTimer = null;

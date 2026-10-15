@@ -37,7 +37,8 @@ export function normalizeHarnessName(name) {
 }
 
 const scriptPath = (source) => resolve(HOOKS_DIR, source.script);
-const installable = (h) => h.presence.filter((s) => s.install);
+const installable = (h) => h.presence.filter((s) => s.install && !s.optIn);
+const mcpSource = (h) => h.presence.find((s) => s.kind === "mcp");
 
 // ---- deprecated per-harness wrappers (use installHarness/uninstallHarness) ----------------------
 
@@ -118,7 +119,7 @@ export function autoDiscoverHarnesses(_options = {}, rootDir = process.cwd()) {
 }
 
 /** Runs `op` over a harness's installable presence sources; first failure wins, `modified` is OR-ed. */
-function runSources(harnessName, options, rootDir, op) {
+function runSources(harnessName, options, rootDir, op, withMcp) {
   const desc = registry.get(harnessName);
   if (!desc) {
     const harness = normalizeHarnessName(harnessName);
@@ -126,7 +127,8 @@ function runSources(harnessName, options, rootDir, op) {
   }
   let result = { ok: true, modified: false };
   let targetPath = "";
-  for (const source of installable(desc)) {
+  const mcp = withMcp && mcpSource(desc);
+  for (const source of mcp ? [...installable(desc), mcp] : installable(desc)) {
     const paths = source.resolvePaths({ global: Boolean(options.global), root: rootDir });
     targetPath ||= paths.targetPath;
     const res = op(source, paths);
@@ -144,7 +146,7 @@ function runSources(harnessName, options, rootDir, op) {
  * @returns {{ ok: boolean, harness: string, targetPath: string, modified: boolean, error?: string }}
  */
 export function installHarness(harnessName, options = {}, rootDir = process.cwd()) {
-  return runSources(harnessName, options, rootDir, (source, paths) => source.install(paths, scriptPath(source)));
+  return runSources(harnessName, options, rootDir, (source, paths) => source.install(paths, scriptPath(source)), Boolean(options.mcp));
 }
 
 /**
@@ -155,7 +157,8 @@ export function installHarness(harnessName, options = {}, rootDir = process.cwd(
  * @returns {{ ok: boolean, harness: string, targetPath: string, modified: boolean, error?: string }}
  */
 export function uninstallHarness(harnessName, options = {}, rootDir = process.cwd()) {
-  return runSources(harnessName, options, rootDir, (source, paths) => source.uninstall(paths));
+  // the opt-in MCP entry is always removed: uninstall must leave no mesh entries behind
+  return runSources(harnessName, options, rootDir, (source, paths) => source.uninstall(paths), true);
 }
 
 /**
@@ -170,4 +173,19 @@ export function diagnoseHarness(harnessName, options = {}, rootDir = process.cwd
   if (!desc) return { harness: normalizeHarnessName(harnessName), targetPath: "", status: "Unknown harness", installed: false };
   const source = installable(desc)[0];
   return source.diagnose(source.resolvePaths({ global: Boolean(options.global), root: rootDir }));
+}
+
+/**
+ * Diagnoses the opt-in MCP entry of a harness.
+ * @param {string} harnessName id or alias
+ * @param {{ global?: boolean }} options
+ * @param {string} [rootDir=process.cwd()]
+ * @returns {{ harness: string, targetPath: string, installed: boolean, supported: boolean }}
+ */
+export function diagnoseMcp(harnessName, options = {}, rootDir = process.cwd()) {
+  const desc = registry.get(harnessName);
+  const source = desc && mcpSource(desc);
+  if (!source) return { harness: normalizeHarnessName(harnessName), targetPath: "", installed: false, supported: false };
+  const paths = source.resolvePaths({ global: Boolean(options.global), root: rootDir });
+  return { harness: desc.id, targetPath: paths.targetPath, installed: source.diagnose(paths).installed, supported: true };
 }

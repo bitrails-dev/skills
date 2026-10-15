@@ -9,6 +9,7 @@ import {
   writeLoader,
   removeFile,
   diagnoseResult,
+  jsonMcpSource,
 } from "./shared/install.mjs";
 
 const ID = "opencode";
@@ -90,6 +91,15 @@ export default {
       uninstall,
       diagnose,
     },
+    jsonMcpSource({
+      id: ID,
+      key: "mcp",
+      resolvePaths: ({ global, root }) => {
+        const base = global ? join(homedir(), ".config", "opencode") : join(root, ".opencode");
+        return { targetPath: join(base, "opencode.json") };
+      },
+      entryFor: ({ command, args }) => ({ type: "local", command: [command, ...args], enabled: true }),
+    }),
   ],
   pid: "direct", // the plugin runs inside the harness: process.pid is the harness
   name: { watch: { kind: "event" } }, // session.updated -> rename event

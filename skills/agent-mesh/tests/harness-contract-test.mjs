@@ -4,9 +4,9 @@
  */
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { spawn } from "node:child_process";
 
 process.env.MESH_SILENT = "1"; // tests must never raise desktop notifications
@@ -14,7 +14,7 @@ process.env.MESH_HOME = mkdtempSync(join(tmpdir(), "mesh-test-home-"));
 
 const registry = await import("../src/harnesses/index.mjs");
 const { classifyCmdline } = await import("../src/harnesses/shared/process.mjs");
-const { installHarness, uninstallHarness, diagnoseHarness } = await import("../src/hooks/installer.mjs");
+const { installHarness, uninstallHarness, diagnoseHarness, diagnoseMcp } = await import("../src/hooks/installer.mjs");
 const { AgentMeshBroker } = await import("../src/broker.mjs");
 const { sendIpcRequest } = await import("../src/ipc.mjs");
 
@@ -58,6 +58,35 @@ async function runContract(t, h) {
     if (first.targetPath.endsWith(".json") && existsSync(first.targetPath)) {
       assert.deepEqual(JSON.parse(readFileSync(first.targetPath, "utf8")).foreignKey, { keep: true });
     }
+  });
+
+  await t.test("mcp entry is opt-in, round-trips, keeps foreign config, and is always removed on uninstall", () => {
+    if (!h.presence.some((s) => s.kind === "mcp")) return;
+    const root = mkdtempSync(join(tmpdir(), `mesh-contract-mcp-${h.id}-`));
+    const opts = { global: false };
+    assert.equal(diagnoseMcp(h.id, opts, root).supported, true);
+
+    const plain = installHarness(h.id, opts, root);
+    assert.equal(plain.ok, true, plain.error);
+    assert.equal(diagnoseMcp(h.id, opts, root).installed, false, "default install must not add the MCP entry");
+
+    const mcp = diagnoseMcp(h.id, opts, root);
+    mkdirSync(dirname(mcp.targetPath), { recursive: true });
+    const foreign = mcp.targetPath.endsWith(".toml") ? '[other]\nkey = "keep"\n' : JSON.stringify({ foreignKey: { keep: true } });
+    writeFileSync(mcp.targetPath, foreign);
+
+    const withMcp = installHarness(h.id, { ...opts, mcp: true }, root);
+    assert.equal(withMcp.ok, true, withMcp.error);
+    assert.equal(diagnoseMcp(h.id, opts, root).installed, true);
+    const text = readFileSync(mcp.targetPath, "utf8");
+    assert.ok(text.includes("mesh-mcp.mjs") && text.includes("--harness") && text.includes(h.id), "launch line names script and harness");
+    assert.ok(text.includes("keep"), "foreign config preserved");
+    assert.equal(installHarness(h.id, { ...opts, mcp: true }, root).ok, true, "idempotent");
+    assert.equal(text.split("agent-mesh").length, readFileSync(mcp.targetPath, "utf8").split("agent-mesh").length, "no duplicate entries");
+
+    assert.equal(uninstallHarness(h.id, opts, root).ok, true);
+    assert.equal(diagnoseMcp(h.id, opts, root).installed, false);
+    assert.ok(readFileSync(mcp.targetPath, "utf8").includes("keep"), "foreign config survives uninstall");
   });
 
   await t.test("name resolution from fixture (and null for an unknown session)", () => {
