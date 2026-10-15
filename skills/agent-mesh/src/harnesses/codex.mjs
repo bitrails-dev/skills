@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { existsSync } from "node:fs";
 import { readSqliteRow, execSqlite } from "./shared/sqlite.mjs";
 import { tailText } from "./shared/transcript.mjs";
-import { DEFAULT_TTL_MS, looksInteractive } from "./shared/process.mjs";
+import { DEFAULT_TTL_MS, classifyCmdline } from "./shared/process.mjs";
 import {
   readJsonSafe,
   installNestedHooks,
@@ -50,6 +50,48 @@ function pollSession(row) {
   };
 }
 
+// Global flags that consume the next token (`codex --help`); everything else starting with "-" is a switch.
+const VALUE_FLAGS = new Set([
+  "-c", "--config", "--enable", "--disable", "--remote", "--remote-auth-token-env", "-i", "--image", "-m", "--model",
+  "--local-provider", "-p", "--profile", "-s", "--sandbox", "-C", "--cd", "--add-dir", "-a", "--ask-for-approval",
+]);
+// Subcommands that never host an interactive session (daemon, helpers, one-shot management commands).
+const NON_SESSION_SUBCOMMANDS = new Set([
+  "exec", "e", "review", "login", "logout", "mcp", "mcp-server", "plugin", "app-server", "remote-control", "app",
+  "completion", "update", "doctor", "sandbox", "debug", "apply", "a", "queue", "archive", "delete", "unarchive",
+  "migrate-rollouts", "features", "exec-server", "cloud", "help",
+]);
+// Non-interactive runs whose hooks still fire in-process: not a user terminal (like claude -p).
+const HEADLESS_RUN_SUBCOMMANDS = new Set(["exec", "e", "review"]);
+
+/**
+ * First positional token of a codex command line (subcommand or prompt), or null. null also for
+ * --help/--version, which exit immediately. Windows paths and quoted tokens are handled.
+ */
+function firstPositional(cmdline) {
+  const toks = String(cmdline || "").match(/"[^"]*"|\S+/g)?.map((t) => t.replace(/^"|"$/g, "")) ?? [];
+  for (let i = 1; i < toks.length; i++) {
+    const t = toks[i];
+    if (["-h", "--help", "-V", "--version"].includes(t)) return { exits: true };
+    if (!t.startsWith("-")) return { token: t.toLowerCase() };
+    if (VALUE_FLAGS.has(t)) i++;
+  }
+  return {};
+}
+
+/** Interactive TUI = a codex.exe with no non-session subcommand (bare, resume, fork, agents, or a prompt). */
+function isInteractiveTui(cmdline) {
+  if (!cmdline) return false;
+  const p = firstPositional(cmdline);
+  return !p.exits && !NON_SESSION_SUBCOMMANDS.has(p.token);
+}
+
+/** Default classification plus `codex exec`/`review` as background (they run hooks in their own process). */
+function classifyProcess(cmdline) {
+  const cls = classifyCmdline(cmdline);
+  return { ...cls, background: cls.background || HEADLESS_RUN_SUBCOMMANDS.has(firstPositional(cmdline).token) };
+}
+
 /** @type {import("./index.mjs").Harness} */
 export default {
   id: ID,
@@ -81,10 +123,11 @@ export default {
   // Hooks run inside the shared `codex app-server` daemon: the default classifier reports that as
   // shared-host (no pid), and the scanner supplies the TUI pid instead.
   pid: "walk",
+  classifyProcess,
   name: { resolve: resolveName, watch: { kind: "sqlite-poll" } },
   pollSession,
   end: { signals: ["event", "pid", "ttl"], ttlMs: DEFAULT_TTL_MS },
-  process: { exe: ["codex"], isInteractiveTui: looksInteractive },
+  process: { exe: ["codex"], isInteractiveTui },
   fixtures: {
     name: {
       setup(dir) {
@@ -99,12 +142,32 @@ export default {
       },
     },
     tui: {
-      interactive: ['"C:/x/codex.exe"', "codex resume abc"],
-      background: ['"codex.exe" app-server --listen unix:// --managed-daemon', "codex exec do-work", "codex mcp-server"],
+      interactive: [
+        '"C:/x/codex.exe"',
+        "codex resume abc",
+        'codex "fix the bug"',
+        'codex -c model="o3" -p work resume --last',
+        "codex --no-daemon",
+        "codex agents",
+      ],
+      background: [
+        '"codex.exe" app-server --listen unix:// --managed-daemon',
+        "codex app-server daemon pid-update-loop",
+        "codex app-server proxy",
+        "codex exec do-work",
+        "codex -c a=b exec do-work",
+        "codex exec-server",
+        "codex mcp-server",
+        "codex queue 019 hello",
+        "codex doctor",
+        "codex --version",
+      ],
     },
     cmdlines: [
       { cmd: '"codex.exe" app-server --managed-daemon', background: false, sharedHost: true },
       { cmd: '"C:/x/codex.exe"', background: false, sharedHost: false },
+      { cmd: "codex exec --json do-work", background: true, sharedHost: false },
+      { cmd: "codex review --uncommitted", background: true, sharedHost: false },
     ],
   },
 };

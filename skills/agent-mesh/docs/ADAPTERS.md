@@ -1,6 +1,6 @@
 # Harness adapters: plan
 
-Status: Phase 1 (adapter refactor) IMPLEMENTED. Sections 5-6 are plans for Phases 2 and 3.
+Status: Phase 1 (adapter refactor) and Phase 2 (Codex host study, section 6) done. Section 5 (MCP shim) is a plan.
 
 Goal: adding a harness = one file `src/harnesses/<id>.mjs` + one line in `src/harnesses/index.mjs`
 + fixtures in the contract test. Broker and installer contain zero `if (harness === "...")`.
@@ -94,36 +94,63 @@ pid exit; TUI classification from `fixtures.tui`; hook command-line classificati
   callers (`presence/dedupe.mjs`), not per harness.
 - Install: new `PresenceSource{kind:"mcp"}` per descriptor, same install/uninstall/diagnose contract.
 
-## 6. Tables to fill (Deliverables B and C)
+## 6. Evidence tables (Deliverables B and C)
+
+Codex CLI 0.162.1 on Windows 11, 2026-10-15. Method: read-only inspection of the live daemon
+(`Get-CimInstance Win32_Process`, `~/.codex/app-server-daemon/*`, `logs_2.sqlite`, `state_5.sqlite`,
+mesh `hooks.log`), `codex ... --help`, `codex app-server generate-json-schema`, binary strings, and a
+throwaway daemon/stdio server under a temp `CODEX_HOME` with a logging MCP probe (the user's real
+`~/.codex` and daemon were never written to or connected to). Experiment scripts live outside the repo.
 
 ### B. MCP behavior per harness (empirical)
 
-| Harness | Config file/format | Spawn: eager/lazy | Per-session / shared | Parent PID = | Exits with TUI? | clientInfo.name | Notes |
+| Harness | Config | Spawn | Scope | Parent PID | Exits with TUI? | clientInfo.name | Notes |
 |---|---|---|---|---|---|---|---|
-| claude | | | | | | | |
-| codex | | | | | | | |
-| antigravity | | | | | | | |
-| opencode | | | | | | | |
-| pi | | | | | | | |
+| codex | `[mcp_servers.<name>]` in `config.toml` (command/args/env, or url) | at `thread/start`, before any turn (`mcpServer/startupStatus/updated` starting -> ready within ~0.2s); not at `initialize` | per thread (status events carry `threadId`); cwd = thread cwd | the app-server host: the shared daemon pid (37772 class) for TUI/daemon threads; stdio-embedded host in `--listen stdio://` | No. Survives `thread/unsubscribe` and client disconnect; dies at thread unload (`thread/closed`, default 60s after last subscriber and idle) or when the host dies (hard kill: no EOF/SIGTERM handler ran) | `codex-mcp-client` v0.162.1 | MCP shim therefore sees the daemon as parent, never the TUI: shim must key presence on thread, not parent pid. Embedded host for `codex --no-daemon` / `codex exec` not measured (needs a TTY / auth) |
+| claude | | | | | | | Phase 2b |
+| antigravity | | | | | | | Phase 2b |
+| opencode | | | | | | | Phase 2b |
+| pi | | | | | | | Phase 2b |
 
-### C. Codex app-server verdict
+### C. Codex app-server host verdict
 
-| Question | Evidence (command / file) | Answer |
+| Question | Evidence | Answer |
 |---|---|---|
-| MCP servers spawned by daemon or TUI; parent pid | | |
-| Dies on soft-close? Spawn timing | | |
-| Hooks always run in app-server? | | |
-| `app-server proxy`/stdio/ws/unix: thread/name/updated, thread/closed | | |
-| Auth, caveats, safe long-lived? | | |
-| Daemon lifecycle (daemon.pid, daemon-updater.pid, pid-update-loop) | | |
-| All codex.exe cmdline shapes; scanner misclassification risk | | |
-| TUI pid <-> thread id binding (cwd, rollout_path, connection ids, threads cols, locks) | | |
+| 1. Who spawns MCP servers, parent PID, lifetime, timing? | Isolated daemon + probe: probe `ppid` = app-server pid, started 0.1s after `thread/start`; still alive after `thread/unsubscribe` and after the only client disconnected; gone after `thread/closed`. Real daemon `daemon.stderr.log` shows `rmcp::transport` MCP client errors from the daemon process | Daemon (host process) spawns them, per thread, at thread start. TUI is not the parent. Lives until thread unload |
+| 2. Do hooks always run in the app-server? | Real `hooks.log`: all TUI threads report hook pid 37772 (= `daemon.pid`). Exec thread `01a13bb4` (source `exec`, originator `codex_exec`) reports pid 80076, a different process. `codex exec` runs the agent in-process | No. TUI threads on the shared daemon: yes. `codex exec`/`review`: in their own process. `--no-daemon` TUI: embedded host, presumed in-TUI (unverified, needs a TTY) |
+| 3. Is `app-server proxy` / ws / unix a stable way to receive `thread/name/updated`, `thread/closed`? | Control socket `~/.codex/app-server-control/app-server-control.sock` speaks WebSocket (HTTP Upgrade -> 101) over a Unix socket; `codex app-server proxy` is a stdio<->socket byte relay (no framing of its own). Isolated daemon with two clients: client B (never subscribed) received `thread/started`, `thread/name/updated`, `thread/status/changed`, `thread/closed`, `thread/status notLoaded` for client A's thread. Schema from `generate-json-schema` (317 files, versioned with the binary) | Technically yes, passive broadcast observer works with no subscription. Not "stable": help marks `app-server` experimental, schema is version-bound, `experimentalApi` capability gates fields. Caveats: reconnect on daemon restart/update (`daemon update` "may interrupt running work"), daemon may be absent (`--no-daemon`), item/delta notifications flood unless `optOutNotificationMethods` is set, socket dir must be private to the user (the server enforces it). Auth: none for the local socket |
+| 4. Daemon lifecycle | `daemon.pid` = `{pid, processStartTime, executableIdentity}`; `daemon-updater.pid`; process `app-server daemon pid-update-loop` (updater, hourly `installer_fetch`/`package_selected` entries in `daemon-updater.stderr.log`); `packages/app-server-daemon/releases/<ver>` + `current`; locks `daemon.lock`, `app-server-startup.lock`. Parent of both processes was a short-lived bootstrap CLI (already gone) | Daemon is detached, survives all TUIs, restarts on update (new pid, `executableIdentity` changes). `daemon.pid` is a cheap, reliable "who is the host" source |
+| 5. Every `codex.exe` command-line shape | See list below | Scanner must classify by subcommand, not substring: fixed in `harnesses/codex.mjs` |
+| 6. Deterministic TUI pid <-> thread id binding | State DB `threads` has `id, cwd, source, originator, rollout_path, created_at_ms` but no client pid; daemon logs carry `app_server.connection_id` only; `tui-thread-reference-capabilities/<threadId>` empty files are created when a TUI opens a thread (mtime = open time); `thread-writer-locks` holds only `.coordination.lock` while idle; Unix-socket peer pid is not exposed on Windows | Not deterministically derivable without process-handle inspection. Best available heuristic: bind to the TUI process whose start time most recently precedes the thread's `created_at_ms`, restricted to `originator = codex-tui`. Current "most recent unbound TUI" rule kept |
 
-| Signal | Verdict (adopt / keep poll / n/a) | Reason |
+`codex.exe` command-line shapes seen or documented (`--help`, live process list):
+
+| Shape | Role | Seen live |
 |---|---|---|
-| Presence | | |
-| Rename | | |
-| Exit | | |
+| `"\\?\...\app-server-daemon\releases\<ver>\bin\codex.exe" app-server --listen unix:// --analytics-default-enabled --managed-daemon` | shared daemon (hooks + MCP host) | yes |
+| `... codex.exe app-server daemon pid-update-loop` | daemon updater loop | yes |
+| `codex app-server proxy [--sock P]` | stdio relay to the control socket (SSH/remote clients) | no |
+| `codex` / `codex "<prompt>"` / `codex resume\|fork [id\|--last]` / `codex agents` / `codex --remote unix://` | interactive TUI (connects to daemon; `--no-daemon` embeds a host) | no TUI running during the study |
+| `codex exec ...`, `codex review ...` | headless, in-process hooks | no |
+| `codex exec-server`, `codex mcp-server`, `codex queue\|archive\|delete\|unarchive`, `login`, `logout`, `mcp`, `plugin`, `doctor`, `update`, `features`, `completion`, `sandbox`, `debug`, `apply`, `cloud`, `app`, `--help`, `--version` | helpers / one-shot management, not sessions | no |
+| `codex-windows-sandbox-service.exe` | sandbox helper, different exe name (not matched by exe `codex`) | yes |
+
+Scanner risk found: the old shared regex matched `exec` only as a whole word, so `codex exec-server`,
+`codex queue ...`, `codex doctor`, `codex -c k=v exec ...` and `-p <profile>` (a profile flag, not
+headless) were misclassified. Replaced with first-positional-token classification (value flags skipped).
+
+#### Verdict per signal
+
+| Signal | Verdict | Failure modes |
+|---|---|---|
+| Presence | Keep hooks + process scanner. Observer would add nothing the scanner/hooks lack for TUI sessions | Hooks fire at first prompt only (scanner covers app open); subagent threads run hooks in the daemon too (not filtered); `codex exec` now classified background |
+| Rename | Keep sqlite/session_index poll (<= 5s). Observer's `thread/name/updated` is instant and verified, optional later | Poll lag 5s; observer needs daemon present + reconnect + experimental protocol |
+| Exit | Keep TUI pid watcher (immediate) + hook `SessionEnd`/TTL. `SessionEnd` hook == thread unload == `thread/closed`, 60s after the last TUI leaves (real log: "no subscribers and is idle; shutting down" 2s before the SessionEnd hook) | Rows without a bound pid (thread/new inside a TUI, multiple unbound TUIs) rely on that 60s + TTL; `thread_unload_delay_secs` is user-configurable; observer gives same latency as hooks, not better |
+
+Unverified: embedded-host behavior for `--no-daemon` TUI and `codex exec` (MCP parent, hook pid); real TUI
+command-line shape (none running); `thread/archived`/`thread/deleted` delivery to a passive observer;
+unload timing under a live observer in the real daemon (only isolated daemon tested); the
+`thread_unload_delay_secs` default is 60s in 0.162.1 only.
 
 ## 7. How to add a harness
 
