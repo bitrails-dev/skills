@@ -11,14 +11,15 @@
  * Process exit is covered by the broker's PID watcher.
  */
 
-import { resolveIpcAddress, sendIpcRequest } from "../ipc.mjs";
+import { resolveIpcAddress } from "../ipc.mjs";
+import { send as sendIpc, claimAndAck } from "../presence/announce.mjs";
 
 let loaded = false; // OpenCode invokes every exported function; register once per process
 let currentSession = `opencode-${process.pid}`;
 let currentName = null;
 
-const send = (address, action, payload) =>
-  sendIpcRequest(address, { action, payload }, 0, { timeoutMs: 800 }).catch(() => null);
+const IPC = { timeoutMs: 800 };
+const send = (address, action, payload) => sendIpc(address, action, payload, IPC);
 
 async function announce(event, sessionId, cwd, name) {
   // Headless guard: if invoked inside a mesh headless turn, avoid duplicate presence cycles
@@ -42,10 +43,7 @@ async function onIdle(sessionId) {
   if (process.env.MESH_AGENT) return;
   const address = resolveIpcAddress(process.cwd());
   const id = sessionId || currentSession;
-  const res = await send(address, "claim_inbox", { agent: "opencode", sessionId: id });
-  if (res?.ok && Array.isArray(res.messages) && res.messages.length > 0) {
-    await send(address, "ack", { ids: res.messages.map((m) => m.id) });
-  }
+  await claimAndAck(address, "opencode", id, IPC);
   await announce("idle", id);
 }
 

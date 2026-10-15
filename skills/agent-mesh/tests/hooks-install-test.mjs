@@ -400,7 +400,7 @@ test("Lifecycle Hook Installer & Uninstaller Suite", async (t) => {
     const detected = autoDiscoverHarnesses({ global: true });
     assert.ok(Array.isArray(detected));
     assert.ok(detected.length > 0, "Should detect at least 1 harness on current machine");
-    assert.ok(detected.includes("claude") || detected.includes("agy"));
+    assert.ok(detected.includes("claude") || detected.includes("antigravity"));
   });
 
   await t.test("13. CLI targeted --init codex,pi and --uninstall codex,pi work end-to-end", async () => {

@@ -1,88 +1,13 @@
-import {
-  existsSync,
-  readFileSync,
-  writeFileSync,
-  appendFileSync,
-  mkdirSync,
-  statSync,
-  renameSync,
-  openSync,
-  readSync,
-  closeSync,
-} from "node:fs";
+import { existsSync, statSync, renameSync, mkdirSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
-import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
 import { toastArgs } from "../notify.mjs";
+import * as registry from "../harnesses/index.mjs";
+import { resolvePid, isBackgroundSession, isProcessAlive, getMeshHome } from "../harnesses/shared/process.mjs";
 
-const nodeRequire = createRequire(import.meta.url);
-
-/** Antigravity conversation summaries DB (MESH_AGY_DB overrides, used by tests). */
-export const agyDbPath = () =>
-  process.env.MESH_AGY_DB || join(homedir(), ".gemini", "antigravity-cli", "conversation_summaries.db");
-
-/** Codex thread state DB (MESH_CODEX_DB overrides, used by tests). */
-export const codexDbPath = () => process.env.MESH_CODEX_DB || join(homedir(), ".codex", "state_5.sqlite");
-
-/**
- * One-shot read-only sqlite query. Returns the first row, or null when the file/row/schema is missing.
- * node:sqlite is required lazily so hooks that never need it skip the experimental-feature warning.
- */
-export function readSqliteRow(path, sql, ...args) {
-  let db;
-  try {
-    if (!existsSync(path)) return null;
-    const { DatabaseSync } = nodeRequire("node:sqlite");
-    db = new DatabaseSync(path, { readOnly: true });
-    return db.prepare(sql).get(...args) || null;
-  } catch {
-    return null;
-  } finally {
-    try { db?.close(); } catch {}
-  }
-}
-
-/** Antigravity conversation row (title falls back to preview), or null. */
-export function readAgyConversation(conversationId) {
-  const r = readSqliteRow(
-    agyDbPath(),
-    "SELECT title, preview, status, last_modified_time FROM conversation_summaries WHERE conversation_id = ?",
-    conversationId
-  );
-  return r ? { ...r, name: r.title || r.preview || null } : null;
-}
-
-/** Codex thread row from state_5.sqlite (name column, then title), or null. */
-export function readCodexThread(threadId) {
-  const r = readSqliteRow(
-    codexDbPath(),
-    "SELECT name, title, updated_at_ms, updated_at, archived FROM threads WHERE id = ?",
-    threadId
-  );
-  return r ? { ...r, name: r.name || r.title || null } : null;
-}
-
-/**
- * Regex matching any agent-mesh hook script invocation (including legacy names).
- */
-export const MESH_HOOK_MATCHER = /(?:agy-)?presence-hook\.mjs|stop-hook\.mjs|opencode-presence-plugin|pi-presence-extension|agent-mesh-presence/;
-
-/**
- * Builds a cross-platform executable hook command with forward slashes.
- * Forward slashes survive cmd.exe, PowerShell, and bash without escaping errors.
- * @param {string} scriptAbsPath - Absolute path to target hook script.
- * @param {string[]} [extraArgs=[]] - Additional CLI arguments (e.g. ['--harness', 'codex']).
- * @returns {string} Formatted shell command.
- */
-export function buildHookCommand(scriptAbsPath, extraArgs = []) {
-  const normalized = scriptAbsPath.replace(/\\/g, "/");
-  const argsStr = extraArgs.length > 0 ? " " + extraArgs.join(" ") : "";
-  // agy's hook runner mangles double-quoted paths (joins them onto its config dir), so only quote
-  // when the path actually contains whitespace.
-  const script = /\s/.test(normalized) ? `"${normalized}"` : normalized;
-  return `node ${script}${argsStr}`;
-}
+export { buildHookCommand, MESH_HOOK_MATCHER } from "../harnesses/shared/install.mjs";
+export { readSqliteRow } from "../harnesses/shared/sqlite.mjs";
+export { isBackgroundSession, isProcessAlive, getMeshHome };
 
 /**
  * Reads and parses JSON payload from standard input with a timeout guard.
@@ -176,197 +101,30 @@ export function emitJson(obj) {
 }
 
 /**
- * Safe process liveness check.
- * @param {number} pid
- * @returns {boolean}
- */
-export function isProcessAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return err.code === "EPERM";
-  }
-}
-
-export function getMeshHome() {
-  return process.env.MESH_HOME || homedir();
-}
-
-/**
- * Resolves the authentic long-lived harness process ID for an interactive session.
- * On Windows, hook scripts are executed through intermediate wrapper shells (cmd.exe/pwsh.exe)
- * whose PPID dies as soon as the hook finishes. This function ascends the process tree once
- * per session to identify the true parent harness (Claude Code, Antigravity, etc.) and
- * caches the result in ~/.agent-mesh/pids/<sessionId>.pid for sub-millisecond future lookups.
+ * Best-effort human-readable session name via the harness descriptor (Claude transcript title,
+ * Codex thread name, agy conversation title). Never throws; null when the session has no name yet.
  *
- * @param {string} [sessionId]
- * @param {object} [options={}]
- * @param {string} [options.harness]
- * @param {string} [options.event]
- * @param {boolean} [options.fastOnly]
- * @returns {number}
- */
-const BACKGROUND_CMD = /daemon\s+run|--fork-session|--agent|(?:^|\s)(?:-p|--print)(?:\s|$)/;
-
-/**
- * Best-effort human-readable session name: Claude transcript custom/AI title, Codex thread name.
- * Never throws; returns null when the session has no name yet.
- *
- * @param {string} harness
+ * @param {string} harness id or alias
  * @param {string} sessionId
  * @param {{ transcript_path?: string }} [input]
  * @returns {string|null}
  */
 export function resolveSessionName(harness, sessionId, input = {}) {
-  const tail = (p, bytes) => {
-    const size = statSync(p).size;
-    const fd = openSync(p, "r");
-    try {
-      const len = Math.min(size, bytes);
-      const buf = Buffer.alloc(len);
-      readSync(fd, buf, 0, len, size - len);
-      return buf.toString("utf8");
-    } finally {
-      closeSync(fd);
-    }
-  };
   try {
-    if (harness === "claude" && input.transcript_path && existsSync(input.transcript_path)) {
-      let custom = null;
-      let ai = null;
-      for (const line of tail(input.transcript_path, 512 * 1024).split("\n")) {
-        if (line.includes('"custom-title"')) custom = JSON.parse(line).customTitle || custom;
-        else if (line.includes('"ai-title"')) ai = JSON.parse(line).aiTitle || ai;
-      }
-      return custom || ai || null;
-    }
-    if (harness === "antigravity") return readAgyConversation(sessionId)?.name || null;
-    if (harness === "codex") {
-      const idx = join(homedir(), ".codex", "session_index.jsonl");
-      if (!existsSync(idx)) return null;
-      let name = null;
-      for (const line of tail(idx, 256 * 1024).split("\n")) {
-        if (line.includes(sessionId)) name = JSON.parse(line).thread_name || name;
-      }
-      return name || readCodexThread(sessionId)?.name || null;
-    }
-  } catch {}
-  return null;
+    return registry.get(harness)?.name?.resolve?.({ sessionId, transcript: input.transcript_path }) || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
- * True when the session's harness process was identified as a background (non-terminal) process.
- * @param {string} sessionId
- * @returns {boolean}
+ * Resolves the authentic long-lived harness process ID for a hook-driven session (see resolvePid).
+ * @param {string} [sessionId]
+ * @param {{ harness?: string, event?: string, fastOnly?: boolean }} [options]
+ * @returns {number|null}
  */
-export function isBackgroundSession(sessionId) {
-  if (!sessionId) return false;
-  const clean = String(sessionId).replace(/[^\w-]/g, "");
-  return existsSync(join(getMeshHome(), ".agent-mesh", "pids", `${clean}.bg`));
-}
-
 export function resolveTrueHarnessPid(sessionId, options = {}) {
-  const directPid = process.ppid || process.pid;
-  if (!sessionId) return directPid;
-
-  const harness = String(options.harness || "").toLowerCase();
-  const event = String(options.event || "");
-  const cleanSessionId = String(sessionId).replace(/[^\w-]/g, "");
-  const pidsDir = join(getMeshHome(), ".agent-mesh", "pids");
-  const pidFile = join(pidsDir, `${cleanSessionId}.pid`);
-
-  // 1. SessionEnd fast path: never crawl or spawn external processes when terminating
-  if (event === "SessionEnd" || options.fastOnly) {
-    try {
-      if (existsSync(pidFile)) {
-        const cached = Number(readFileSync(pidFile, "utf8").trim());
-        if (cached) return cached;
-      }
-    } catch {}
-    return directPid;
-  }
-
-  // 2. Check cache first (< 0.2ms). Sessions hosted by a shared app-server have no PID of their own.
-  if (existsSync(join(pidsDir, `${cleanSessionId}.nopid`))) return null;
-  try {
-    if (existsSync(pidFile)) {
-      const cached = Number(readFileSync(pidFile, "utf8").trim());
-      if (cached && isProcessAlive(cached)) {
-        return cached;
-      }
-    }
-  } catch {}
-
-  // 3. Walk up from the hook's parent past shell wrappers to the long-lived harness process.
-  // Windows: one pwsh/powershell invocation (Get-Process .Parent, ~1-2s) paid once per session, then cached.
-  const shells = ["cmd", "powershell", "pwsh", "conhost", "bash", "sh", "dash", "zsh", "fish", "wsl"];
-  let resolvedPid = directPid;
-  let cmdline = "";
-  try {
-    if (process.env.MESH_NO_PID_WALK === "1") {
-      // test/opt-out: trust the direct parent
-    } else if (process.platform === "win32") {
-      const script =
-        `$s=@('${shells.join("','")}');$p=Get-Process -Id ${directPid} -ErrorAction SilentlyContinue;` +
-        `while($p -and $p.ProcessName.ToLower() -in $s -and $p.Parent){$p=$p.Parent};if($p){"$($p.Id)|$($p.CommandLine)"}`;
-      const out = execFileSync(
-        "pwsh.exe",
-        ["-NoProfile", "-NonInteractive", "-Command", script],
-        { encoding: "utf8", timeout: 5000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }
-      ).trim();
-      const m = out.match(/^(\d+)\|(.*)$/s);
-      if (m) {
-        resolvedPid = Number(m[1]);
-        cmdline = m[2];
-      }
-    } else {
-      let curr = directPid;
-      for (let i = 0; i < 8; i++) {
-        const [ppid, comm] = execFileSync("ps", ["-o", "ppid=,comm=", "-p", String(curr)], { encoding: "utf8" })
-          .trim().split(/\s+/);
-        if (!shells.includes(String(comm).split("/").pop().toLowerCase()) || !Number(ppid)) break;
-        curr = Number(ppid);
-      }
-      resolvedPid = curr;
-      cmdline = execFileSync("ps", ["-o", "args=", "-p", String(curr)], { encoding: "utf8" });
-    }
-  } catch {}
-  // Background/daemon-spawned harness processes (forks, --agent workers, daemons, -p runs) are not
-  // user terminals: mark them so hooks stay silent instead of registering phantom sessions.
-  if (BACKGROUND_CMD.test(cmdline)) {
-    try {
-      mkdirSync(pidsDir, { recursive: true });
-      writeFileSync(join(pidsDir, `${cleanSessionId}.bg`), "1", "utf8");
-    } catch {}
-  }
-  // Codex hooks run inside the long-lived `codex app-server` daemon shared by every session: its PID
-  // outlives all of them, so report no PID and let the broker's inactivity TTL close idle sessions.
-  if (/app-server/.test(cmdline)) {
-    try {
-      mkdirSync(pidsDir, { recursive: true });
-      writeFileSync(join(pidsDir, `${cleanSessionId}.nopid`), "1", "utf8");
-    } catch {}
-    return null;
-  }
-  if (resolvedPid && isProcessAlive(resolvedPid)) {
-    try {
-      mkdirSync(pidsDir, { recursive: true });
-      writeFileSync(pidFile, String(resolvedPid), "utf8");
-    } catch {}
-    return resolvedPid;
-  }
-
-  // 5. Cache fallback directPid
-  if (directPid) {
-    try {
-      mkdirSync(pidsDir, { recursive: true });
-      writeFileSync(pidFile, String(directPid), "utf8");
-    } catch {}
-  }
-
-  return directPid;
+  return resolvePid(registry.get(options.harness) ?? null, sessionId, options);
 }
 
 /**

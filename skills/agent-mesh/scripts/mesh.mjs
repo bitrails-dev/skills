@@ -23,7 +23,6 @@ import {
   uninstallClaudeHooks,
   installAgyHooks,
   uninstallAgyHooks,
-  resolveHookTargets,
 } from "../src/hooks/installer.mjs";
 
 /**

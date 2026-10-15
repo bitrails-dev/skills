@@ -9,7 +9,8 @@
  * - session_shutdown: Announces end only for reason "quit" (reload/new/resume/fork keep the process).
  */
 
-import { resolveIpcAddress, sendIpcRequest } from "../ipc.mjs";
+import { resolveIpcAddress } from "../ipc.mjs";
+import { send, claimAndAck } from "../presence/announce.mjs";
 
 let currentId = null; // stable per start so a rename never forks the session identity
 
@@ -31,19 +32,16 @@ async function announce(event, pi, ev = {}, name = sessionName(pi)) {
   const pid = process.pid;
   const cwd = process.cwd();
 
-  await sendIpcRequest(address, {
-    action: "session_event",
-    payload: {
-      harness: "pi",
-      sessionId,
-      event,
-      pid,
-      cwd,
-      origin: "interactive",
-      name,
-      notify: event === "start" || event === "end",
-    },
-  }, 0).catch(() => {});
+  await send(address, "session_event", {
+    harness: "pi",
+    sessionId,
+    event,
+    pid,
+    cwd,
+    origin: "interactive",
+    name,
+    notify: event === "start" || event === "end",
+  });
 }
 
 async function onAgentEnd(pi, ev = {}) {
@@ -53,24 +51,8 @@ async function onAgentEnd(pi, ev = {}) {
   const sessionId = currentId || sessionName(pi) || ev?.sessionId || `pi-${Date.now()}`;
   const pid = process.pid;
 
-  try {
-    const res = await sendIpcRequest(address, {
-      action: "claim_inbox",
-      payload: { agent: "pi", sessionId },
-    }, 0).catch(() => null);
-
-    if (res?.ok && Array.isArray(res.messages) && res.messages.length > 0) {
-      await sendIpcRequest(address, {
-        action: "ack",
-        payload: { ids: res.messages.map((m) => m.id) },
-      }, 0).catch(() => {});
-    }
-  } catch {}
-
-  await sendIpcRequest(address, {
-    action: "session_event",
-    payload: { harness: "pi", sessionId, event: "idle", pid, name: sessionName(pi) },
-  }, 0).catch(() => {});
+  await claimAndAck(address, "pi", sessionId);
+  await send(address, "session_event", { harness: "pi", sessionId, event: "idle", pid, name: sessionName(pi) });
 }
 
 export default function piPresenceExtension(pi) {
