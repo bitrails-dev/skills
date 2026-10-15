@@ -57,6 +57,8 @@ wrapped in an untrusted-provenance envelope. `mesh wait --session <id> [--stream
 Adding a harness is one descriptor file in `src/harnesses/` plus a registry line; see `docs/ADAPTERS.md`
 ("How to add a harness"). Design notes, MCP spawn behaviour per harness and the Codex app-server study live there too.
 
+**User guide** (install, update, opt-ins, commands, troubleshooting, recovery runbook): [docs/GUIDE.md](docs/GUIDE.md).
+
 ## Quick Start CLI
 
 ```powershell

@@ -120,7 +120,7 @@ export function autoDiscoverHarnesses(_options = {}, rootDir = process.cwd()) {
 }
 
 /** Runs `op` over a harness's installable presence sources; first failure wins, `modified` is OR-ed. */
-function runSources(harnessName, options, rootDir, op, optInKinds = new Set()) {
+function runSources(harnessName, options, rootDir, op, optInKinds = new Set(), onlyKind = null) {
   const desc = registry.get(harnessName);
   if (!desc) {
     const harness = normalizeHarnessName(harnessName);
@@ -128,7 +128,11 @@ function runSources(harnessName, options, rootDir, op, optInKinds = new Set()) {
   }
   let result = { ok: true, modified: false };
   let targetPath = "";
-  for (const source of [...installable(desc), ...optInSources(desc, optInKinds)]) {
+  const sources = onlyKind ? optInSources(desc, new Set([onlyKind])) : [...installable(desc), ...optInSources(desc, optInKinds)];
+  if (onlyKind && sources.length === 0) {
+    return { ok: false, harness: desc.id, targetPath: "", modified: false, error: `${desc.id} has no ${onlyKind} support` };
+  }
+  for (const source of sources) {
     const paths = source.resolvePaths({ global: Boolean(options.global), root: rootDir });
     targetPath ||= paths.targetPath;
     const res = op(source, paths);
@@ -200,4 +204,19 @@ export function diagnoseWake(harnessName, options = {}, rootDir = process.cwd())
   if (!source) return { harness: normalizeHarnessName(harnessName), targetPath: "", installed: false, supported: false };
   const paths = source.resolvePaths({ global: Boolean(options.global), root: rootDir });
   return { harness: desc.id, targetPath: paths.targetPath, installed: source.diagnose(paths).installed, supported: true };
+}
+
+/**
+ * Installs or removes ONE opt-in source kind ("mcp" | "wake") without touching presence hooks.
+ * @param {"mcp"|"wake"} kind
+ * @param {boolean} enable
+ * @param {string} harnessName id or alias
+ * @param {{ global?: boolean }} options
+ * @param {string} [rootDir=process.cwd()]
+ */
+export function setOptIn(kind, enable, harnessName, options = {}, rootDir = process.cwd()) {
+  const op = enable
+    ? (source, paths) => source.install(paths, scriptPath(source))
+    : (source, paths) => source.uninstall(paths);
+  return runSources(harnessName, options, rootDir, op, new Set(), kind);
 }

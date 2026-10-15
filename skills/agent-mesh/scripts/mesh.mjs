@@ -9,6 +9,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { VERSION } from "../src/version.mjs";
 import { sendIpcRequest, findRepoRoot, resolveIpcAddress } from "../src/ipc.mjs";
 import { spawnChild } from "../src/drivers/base.mjs";
 import { ensureBroker, stopBroker, getBrokerInfo } from "../src/daemon.mjs";
@@ -18,6 +19,7 @@ import {
   diagnoseHarness,
   diagnoseMcp,
   diagnoseWake,
+  setOptIn,
   autoDiscoverHarnesses,
   normalizeHarnessName,
   SUPPORTED_HARNESSES,
@@ -577,6 +579,44 @@ async function main() {
       process.exit(0);
     }
 
+    case "mcp":
+    case "wake": {
+      // mesh mcp|wake install|remove|status [harness...|all] [--project|--global]
+      const [action = "status", ...rest] = args;
+      if (!["install", "remove", "uninstall", "status"].includes(action)) {
+        console.error(`Usage: mesh ${cmd} install|remove|status [harness...|all] [--project|--global]`);
+        process.exit(1);
+      }
+      const registry = await import("../src/harnesses/index.mjs");
+      const selection = parseHarnessSelection(action, rest.filter((a) => a !== "all"));
+      let targets = rest.includes("all") ? registry.ids() : selection.harnesses;
+      if (targets.length === 0) targets = autoDiscoverHarnesses({ global: selection.isGlobal }, rootDir);
+      if (targets.length === 0) targets = registry.ids();
+      const scope = selection.isGlobal ? "global" : "project";
+      let failed = false;
+      for (const h of targets) {
+        const opts = { global: selection.isGlobal };
+        if (action === "status") {
+          const d = cmd === "mcp" ? diagnoseMcp(h, opts, rootDir) : diagnoseWake(h, opts, rootDir);
+          console.log(`[${d.harness}:${scope}] ${cmd}: ${!d.supported ? "not supported" : d.installed ? "installed" : "not installed"}${d.targetPath ? ` [${d.targetPath}]` : ""}`);
+          continue;
+        }
+        const res = setOptIn(cmd, action === "install", h, opts, rootDir);
+        if (res.ok) {
+          console.log(`[${res.harness}:${scope}] ${cmd} ${action === "install" ? (res.modified ? "installed" : "already installed") : (res.modified ? "removed" : "was not installed")} [${res.targetPath}]`);
+        } else {
+          failed = true;
+          console.error(`[${res.harness}:${scope}] ${cmd} ${action} failed: ${res.error}`);
+        }
+      }
+      if (action === "install" && !failed) {
+        console.log(cmd === "mcp"
+          ? "Restart the harness sessions to load the MCP server (no broker restart needed)."
+          : "Claude: restart the session to register the hook. Codex: the broker picks the setting up within 30s.");
+      }
+      process.exit(failed ? 1 : 0);
+    }
+
     case "mute":
     case "unmute": {
       try {
@@ -807,7 +847,7 @@ async function main() {
 
     default:
       console.log(`
-Agent Mesh CLI (v1.1.0)
+Agent Mesh CLI (v${VERSION})
 Commands:
   --init, --install [harnesses...]   Install requirements, configure hooks, and start broker (auto-discovers or assigns harnesses)
                                      Add --mcp to also register the opt-in MCP shim (mesh_send/mesh_ask/mesh_inbox/mesh_status)
@@ -816,6 +856,8 @@ Commands:
   stop                               Stop the running broker daemon
   status                             Display current agent sessions, busy status, and queue depth
   wait --session <id> [--stream]     Block until wake-eligible mail arrives for a session (see docs/ADAPTERS.md)
+  mcp install|remove|status [h|all]  Manage the opt-in MCP shim entries (mesh_send/mesh_ask/mesh_inbox/mesh_status)
+  wake install|remove|status [h|all] Manage the opt-in idle-wake source (Claude hook, Codex injector)
   mute | unmute                      Disable/enable waking idle sessions (mail then waits for the next prompt)
   probe-wake <harness>               Guided run that records whether a harness wakes an idle session (evidence row)
   hooks install [harnesses...]       Install lifecycle hooks for specified (or detected) harnesses
