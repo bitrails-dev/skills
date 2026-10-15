@@ -306,6 +306,17 @@ Unverified: the live hook stdin payload (field names for session id; fixture-bas
 with the echo provider does not fire plugin hooks), whether the Stop hook's `decision: block` continues the
 turn, the project-scope plugin location, and the native `session-message` path on non-Windows.
 
+## 13. Session identity (`ui.identity`)
+
+Broker action `whoami` returns one record (session id/name/harness/pid/cwd/origin/state, peers, inbox count,
+muted, broker version, wake tier + candidate, installed components in global scope). Consumers: the MCP
+`mesh_whoami` tool (and `mesh_status` header), the `mesh whoami` CLI, and the SessionStart badge. Each descriptor
+declares its badge channel: `hook-output` (+ `sessionStart`: `system-message+context` | `context` |
+`inject-steps`), `toast`, `status` or `none`. Formatting is shared (`src/presence/identity.mjs`).
+Evidence: Claude/Codex SessionStart output accepts `systemMessage` + `hookSpecificOutput.additionalContext`
+(Codex: from the embedded JSON schema); agy SessionStart accepts `injectSteps`; Pi `ctx.ui.setStatus`
+(extension types 1.2.0); OpenCode `client.tui.showToast` (SDK types). Muse: `additionalContext` only.
+
 ## 12. `.agents` convention per harness
 
 One shared helper (`src/harnesses/shared/agents-dir.mjs`: `agentsDir`, `agentsPath`, `skillDir`,

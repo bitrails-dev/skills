@@ -46,6 +46,8 @@ export default {
     }),
   ],
   pid: "direct", // the extension runs inside the harness: process.pid is the harness
+  // How the session shows that it is on the mesh (badge at session start; see presence/identity.mjs).
+  ui: { identity: { channel: "status" } /* ctx.ui.setStatus footer badge */ },
   // The extension polls the broker and injects with pi.sendUserMessage (always triggers a turn).
   delivery: {
     via: "extension",

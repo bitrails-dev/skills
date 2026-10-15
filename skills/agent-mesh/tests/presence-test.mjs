@@ -228,7 +228,7 @@ describe("Session Discovery & Lifecycle Presence Suite", () => {
   test("5. Universal presence hook: clean stdout on SessionStart and block injection on Stop", async () => {
     const hookScript = join(import.meta.dirname, "../src/hooks/presence-hook.mjs");
 
-    // 1. SessionStart must emit nothing to stdout
+    // 1. SessionStart emits exactly one JSON object: the mesh badge (systemMessage + additionalContext)
     const startProc = await runChild(process.execPath, [hookScript], {
       cwd: testRepo,
       env: { ...process.env, MESH_IPC_ADDRESS: ipcAddr },
@@ -239,7 +239,9 @@ describe("Session Discovery & Lifecycle Presence Suite", () => {
       }),
     });
     assert.equal(startProc.status, 0);
-    assert.equal(startProc.stdout.trim(), "", "SessionStart hook must print nothing to stdout");
+    const badge = JSON.parse(startProc.stdout.trim());
+    assert.match(badge.systemMessage, /^agent-mesh: /);
+    assert.equal(badge.hookSpecificOutput.hookEventName, "SessionStart");
 
     // Verify session registered in broker
     const status = await sendIpcRequest(ipcAddr, { action: "status" });

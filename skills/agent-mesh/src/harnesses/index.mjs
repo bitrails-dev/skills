@@ -54,6 +54,9 @@ import { DEFAULT_TTL_MS } from "./shared/process.mjs";
  *   binaries: PATH lookups; markers: dirs whose existence means "installed"; skillDir: harness-local skill
  *   copy that counts as "mesh available"; projectDir: per-project dir used by the last-resort fallback
  * @property {import("./shared/agents-dir.mjs").AgentsSupport} agents  how the harness treats the `.agents` convention
+ * @property {{ identity: { channel: "hook-output"|"toast"|"status"|"none", sessionStart?: "system-message+context"|"context"|"inject-steps" } }} ui
+ *   how a session shows it is on the mesh: hook-output = SessionStart hook JSON (sessionStart picks the shape),
+ *   toast / status = in-process plugin notice (OpenCode toast, Pi footer status), none = pull only
  * @property {PresenceSource[]} presence
  * @property {{ via: "hook"|"plugin"|"extension", inject: ("prompt"|"invocation"|"turn-end"|"poll")[], idle: "inject"|"toast-only", wake: WakeSpec }} delivery
  *   how queued mail reaches a running session. idle "inject": the harness-side component can wake an idle
@@ -93,6 +96,11 @@ export function validateDescriptor(h) {
   if (!["direct", "walk", "none", "provided"].includes(h.pid)) fail(`bad pid strategy ${h.pid}`);
   if (!h.agents || !["both", "project", "user-import", "none"].includes(h.agents.skills) || typeof h.agents.config !== "boolean" || !h.agents.evidence) {
     fail("agents {skills, config, evidence} required");
+  }
+  const idn = h.ui?.identity;
+  if (!idn || !["hook-output", "toast", "status", "none"].includes(idn.channel)) fail("ui.identity.channel required");
+  if (idn.channel === "hook-output" && !["system-message+context", "context", "inject-steps"].includes(idn.sessionStart)) {
+    fail("ui.identity.sessionStart required for hook-output");
   }
   if (!Array.isArray(h.presence) || h.presence.length === 0) fail("needs at least one presence source");
   for (const s of h.presence) {

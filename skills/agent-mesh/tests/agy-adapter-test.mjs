@@ -68,7 +68,7 @@ test("Antigravity (agy) Presence Hook Adapter Suite", async (t) => {
   const conversationId = "conv-agy-uuid-1234";
 
   try {
-    await t.test("0. SessionStart registers start session with broker and emits {}", async () => {
+    await t.test("0. SessionStart registers start session with broker and emits the mesh badge step", async () => {
       const res = await runAgyHook(
         {
           conversationId,
@@ -79,7 +79,7 @@ test("Antigravity (agy) Presence Hook Adapter Suite", async (t) => {
       );
 
       assert.equal(res.exitCode, 0);
-      assert.deepEqual(res.json, {});
+      assert.match(res.json.injectSteps[0].systemMessage.systemMessage, /agent-mesh/);
 
       // Verify broker session state
       const statusRes = await sendIpcRequest(broker.ipcAddress, { action: "status" });

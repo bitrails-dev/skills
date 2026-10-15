@@ -205,6 +205,7 @@ test("a fake harness registers in a few lines and passes the same contract", asy
     displayName: "Fake",
     discovery: { binaries: [], markers: () => [], projectDir: ".fake" },
     agents: { skills: "none", config: false, evidence: "unverified" },
+    ui: { identity: { channel: "none" } },
     presence: [{
       kind: "plugin",
       script: "pi-presence-extension.mjs",

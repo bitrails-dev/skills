@@ -37,3 +37,13 @@ export async function deliverInbox(address, agent, sessionId, inject, options, w
   await send(address, "ack", { ids }, options);
   return messages.length;
 }
+
+/**
+ * Identity record of this session from the broker (`whoami`), or null when the broker is unreachable.
+ * @param {string} address
+ * @param {{ harness?: string, sessionId?: string, pid?: number, cwd?: string }} query
+ */
+export async function fetchIdentity(address, query, options = { timeoutMs: 800 }) {
+  const res = await send(address, "whoami", query, options);
+  return res?.ok ? res : null;
+}

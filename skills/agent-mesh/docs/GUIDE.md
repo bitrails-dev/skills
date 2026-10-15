@@ -101,6 +101,38 @@ mesh hooks watch # live stream of hook events (bell with --sound, popup with --p
 
 Open a harness session: you should get a start toast and a row in `mesh status`.
 
+### How do I know this session is on the mesh?
+
+Every session announces itself at start, and shows a badge where its harness allows (declared per descriptor as
+`ui.identity`):
+
+| Harness | Badge |
+|---|---|
+| claude, codex | SessionStart hook prints a user-visible line `agent-mesh: <name> (<id>) · <harness> · N peers · inbox M` plus one context line for the model |
+| antigravity | model-visible context step only (no user-visible channel known) |
+| muse | context line for the model (user-visible `systemMessage` unverified) |
+| opencode | toast at start |
+| pi | persistent footer status `agent-mesh` (refreshed after each turn) |
+
+Ask explicitly any time:
+
+```sh
+mesh whoami                          # by $MESH_SESSION_ID, else the sessions whose cwd is the current directory
+mesh whoami --session <name|id>      # also --harness h, --pid N, --line (one line)
+```
+
+From inside a session with the MCP shim, the model can call **`mesh_whoami`** (session id/name, harness, pid,
+cwd, wake tier, installed components, peers, waiting mail, muted flag); `mesh_status` starts with the same line,
+and the MCP `initialize` instructions tell the model it is on the mesh. `MESH_NO_BADGE=1` silences the
+start-of-session badge (hooks, toast, status).
+
+Optional status-line snippet (document only; mesh never edits your status line). Claude Code pipes JSON with
+`session_id` to a `statusLine` command, so:
+
+```json
+{ "statusLine": { "type": "command", "command": "node ~/.agents/skills/agent-mesh/scripts/mesh.mjs whoami --line --stdin" } }
+```
+
 ## 3. Updating
 
 ```sh

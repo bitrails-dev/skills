@@ -103,6 +103,8 @@ export default {
     }),
   ],
   pid: "direct", // the plugin runs inside the harness: process.pid is the harness
+  // How the session shows that it is on the mesh (badge at session start; see presence/identity.mjs).
+  ui: { identity: { channel: "toast" } /* client.tui.showToast at start */ },
   // The in-process plugin polls the broker and injects with client.session.promptAsync (wakes an idle session).
   delivery: {
     via: "plugin",

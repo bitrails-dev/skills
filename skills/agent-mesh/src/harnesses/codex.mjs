@@ -144,6 +144,8 @@ export default {
   // Hooks run inside the shared `codex app-server` daemon: the default classifier reports that as
   // shared-host (no pid), and the scanner supplies the TUI pid instead.
   pid: "walk",
+  // How the session shows that it is on the mesh (badge at session start; see presence/identity.mjs).
+  ui: { identity: { channel: "hook-output", sessionStart: "system-message+context" } /* schema: SessionStart output has systemMessage + additionalContext */ },
   // Mail reaches a running session at prompt,turn-end; an IDLE TUI cannot be woken (toast only).
   delivery: {
     via: "hook",

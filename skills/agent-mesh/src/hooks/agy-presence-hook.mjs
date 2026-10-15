@@ -11,6 +11,9 @@
 
 import { fileURLToPath } from "node:url";
 import { resolveIpcAddress, sendIpcRequest } from "../ipc.mjs";
+import * as registry from "../harnesses/index.mjs";
+import { fetchIdentity } from "../presence/announce.mjs";
+import { sessionStartOutput } from "../presence/identity.mjs";
 import {
   readStdinJson,
   formatMessages,
@@ -147,8 +150,14 @@ async function main() {
         durationMs: Date.now() - startTime,
       });
 
-      // SessionStart expects a JSON object on stdout (e.g. {})
-      await emitJson({});
+      // SessionStart expects a JSON object on stdout; the mesh badge goes in as an injected step.
+      const mode = registry.get("antigravity")?.ui?.identity?.sessionStart;
+      let output = null;
+      if (mode && process.env.MESH_NO_BADGE !== "1") {
+        const info = await fetchIdentity(address, { harness: "antigravity", sessionId, pid, cwd });
+        output = sessionStartOutput(mode, info ?? { harness: "antigravity" });
+      }
+      await emitJson(output ?? {});
       process.exit(0);
     }
 

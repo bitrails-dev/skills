@@ -89,6 +89,8 @@ export default {
     }),
   ],
   pid: "walk",
+  // How the session shows that it is on the mesh (badge at session start; see presence/identity.mjs).
+  ui: { identity: { channel: "hook-output", sessionStart: "inject-steps" } /* model-visible only: SessionStart injectSteps */ },
   // Mail reaches a running session at invocation,turn-end; an IDLE TUI cannot be woken (toast only).
   delivery: {
     via: "hook",

@@ -14,7 +14,8 @@
  */
 
 import { resolveIpcAddress } from "../ipc.mjs";
-import { send as sendIpc, deliverInbox } from "../presence/announce.mjs";
+import { send as sendIpc, deliverInbox, fetchIdentity } from "../presence/announce.mjs";
+import { formatIdentityLine } from "../presence/identity.mjs";
 
 let loaded = false; // OpenCode invokes every exported function; register once per process
 const placeholder = `opencode-${process.pid}`;
@@ -62,6 +63,17 @@ async function deliver(client, wake = false) {
   }
 }
 
+/** Mesh badge: a toast with the session's mesh identity (MESH_NO_BADGE=1 disables). */
+async function badge(client) {
+  if (process.env.MESH_NO_BADGE === "1" || process.env.MESH_AGENT || !client?.tui?.showToast) return;
+  try {
+    const info = await fetchIdentity(resolveIpcAddress(process.cwd()), { harness: "opencode", pid: process.pid, sessionId: rootSession || undefined });
+    await client.tui.showToast({ body: { message: formatIdentityLine(info ?? { harness: "opencode" }), variant: "info" } });
+  } catch {
+    // cosmetic only
+  }
+}
+
 /** Tracks the root session id from bus events (child/sub-agent sessions carry a parentID). */
 function trackSession(info, sessionID) {
   if (info?.id && !info.parentID) rootSession = info.id;
@@ -73,6 +85,7 @@ export default async function opencodePresencePlugin(ctx = {}) {
   loaded = true;
 
   await announce("start", currentSession, ctx.directory);
+  void badge(ctx.client);
 
   const timer = setInterval(() => { void deliver(ctx.client, true); }, POLL_MS);
   timer.unref?.();

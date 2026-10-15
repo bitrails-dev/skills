@@ -12,7 +12,8 @@
  */
 
 import { resolveIpcAddress } from "../ipc.mjs";
-import { send, deliverInbox } from "../presence/announce.mjs";
+import { send, deliverInbox, fetchIdentity } from "../presence/announce.mjs";
+import { formatIdentityLine } from "../presence/identity.mjs";
 
 let currentId = null; // stable per start so a rename never forks the session identity
 let agentBusy = false;
@@ -74,10 +75,22 @@ async function onAgentEnd(pi, ev = {}) {
   await deliver(pi, ev);
 }
 
+/** Mesh badge: persistent footer status with the session's mesh identity (MESH_NO_BADGE=1 disables). */
+async function badge(pi, ctx) {
+  if (process.env.MESH_NO_BADGE === "1" || process.env.MESH_AGENT || typeof ctx?.ui?.setStatus !== "function") return;
+  try {
+    const info = await fetchIdentity(getAddress(), { harness: "pi", pid: process.pid, sessionId: currentId || undefined });
+    ctx.ui.setStatus("agent-mesh", formatIdentityLine(info ?? { harness: "pi" }));
+  } catch {
+    // cosmetic only
+  }
+}
+
 export default function piPresenceExtension(pi) {
   if (typeof pi?.on === "function") {
-    pi.on("session_start", async (ev) => {
+    pi.on("session_start", async (ev, ctx) => {
       await announce("start", pi, ev);
+      void badge(pi, ctx);
       if (!pollTimer) {
         pollTimer = setInterval(() => { void deliver(pi, {}, true); }, POLL_MS);
         pollTimer.unref?.();
@@ -89,9 +102,10 @@ export default function piPresenceExtension(pi) {
       await announce("busy", pi, ev);
     });
 
-    pi.on("agent_end", async (ev) => {
+    pi.on("agent_end", async (ev, ctx) => {
       agentBusy = false;
       await onAgentEnd(pi, ev);
+      void badge(pi, ctx); // refresh peers / inbox counts
     });
 
     pi.on("session_info_changed", async (ev) => {

@@ -25,6 +25,7 @@ import { isProcessAlive } from "./harnesses/shared/process.mjs";
 import { TuiScanner } from "./presence/tui-scanner.mjs";
 import { watchTranscripts, pollExternalSessions } from "./presence/name-watch.mjs";
 import { McpDedupe } from "./presence/mcp-dedupe.mjs";
+import { diagnoseHarness, diagnoseMcp, diagnoseWake } from "./hooks/installer.mjs";
 import { WakePolicy, readWakeConfig } from "./presence/wake-policy.mjs";
 
 export { isProcessAlive };
@@ -96,6 +97,57 @@ export class AgentMeshBroker {
     this.registerDriver("antigravity", createAntigravityDriver());
     this.registerDriver("codex", createCodexDriver());
     this.registerDriver("acp", createAcpDriver());
+  }
+
+  /**
+   * Identity record of one session for `mesh_whoami`, hook badges and `mesh whoami`.
+   * Match order: session id (exact, name, id prefix), then harness+pid, then cwd. Provisional `tui:`/`mcp:` rows
+   * are used only when nothing else matches.
+   */
+  whoami({ harness, sessionId, pid, cwd }) {
+    const agent = harness ? this.resolveAgent(harness) : null;
+    const live = this.repo.listLiveSessions().filter((s) => s.origin === "interactive");
+    const provisional = (s) => s.session_id.startsWith("tui:") || s.session_id.startsWith("mcp:");
+    let pool = agent ? live.filter((s) => s.harness === agent) : live;
+    let matches = [];
+    if (sessionId) {
+      const lower = String(sessionId).toLowerCase();
+      matches = pool.filter((s) => s.session_id === sessionId || (s.name && s.name.toLowerCase() === lower));
+      if (matches.length === 0) matches = pool.filter((s) => s.session_id.toLowerCase().startsWith(lower));
+    }
+    if (matches.length === 0 && pid) matches = pool.filter((s) => s.pid === Number(pid));
+    if (matches.length === 0 && cwd && !sessionId && !pid) matches = pool.filter((s) => s.cwd === cwd);
+    matches.sort((a, b) => Number(provisional(a)) - Number(provisional(b)) || (b.updated_at || 0) - (a.updated_at || 0));
+    const row = matches[0] || null;
+    const desc = registry.get(row?.harness || agent);
+    const h = desc?.id ?? agent ?? row?.harness ?? null;
+    const opts = { global: true };
+    const on = (r) => (r.supported === false ? null : Boolean(r.installed));
+    let components = null;
+    if (desc) {
+      try {
+        components = {
+          hooks: Boolean(diagnoseHarness(desc.id, opts).installed),
+          mcp: on(diagnoseMcp(desc.id, opts)),
+          wake: on(diagnoseWake(desc.id, opts)),
+        };
+      } catch {}
+    }
+    const mine = (m) => !m.to_session || m.to_session === row?.session_id;
+    return {
+      ok: true,
+      harness: h,
+      session: row
+        ? { id: row.session_id, name: row.name || null, harness: row.harness, pid: row.pid || null, cwd: row.cwd, origin: row.origin, state: row.state }
+        : null,
+      matches: matches.length,
+      peers: live.filter((s) => !row || s.session_id !== row.session_id).filter((s) => !provisional(s) || !live.some((o) => o.pid === s.pid && o !== s)).length,
+      inbox: h ? this.repo.getPendingMessages(h).filter(mine).length : 0,
+      muted: this.wake.isMuted(),
+      version: this.version,
+      wake: desc ? { tier: desc.delivery.wake.tier, candidate: desc.delivery.wake.candidate?.tier ?? null } : null,
+      components,
+    };
   }
 
   /**
@@ -499,6 +551,9 @@ export class AgentMeshBroker {
 
       case "wait":
         return this.waitForMail(req.payload || {});
+
+      case "whoami":
+        return this.whoami(req.payload || {});
 
       case "mute":
       case "unmute": {

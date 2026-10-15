@@ -223,6 +223,8 @@ export default {
       diagnose: (p) => diagnoseResult(ID, p.targetPath, bundleInstalled(MCP_PLUGIN, p)),
     },
   ],
+  // How the session shows that it is on the mesh (badge at session start; see presence/identity.mjs).
+  ui: { identity: { channel: "hook-output", sessionStart: "context" } /* additionalContext only: systemMessage handling unverified */ },
   pid: "walk", // hooks are spawned by muse-bin.exe itself; the walk only skips shell wrappers
   delivery: {
     via: "hook",

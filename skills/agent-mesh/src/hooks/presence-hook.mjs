@@ -10,6 +10,9 @@
 import { existsSync, mkdirSync, writeFileSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { resolveIpcAddress, sendIpcRequest } from "../ipc.mjs";
+import * as registry from "../harnesses/index.mjs";
+import { fetchIdentity } from "../presence/announce.mjs";
+import { sessionStartOutput } from "../presence/identity.mjs";
 import {
   readStdinJson,
   emitJson,
@@ -137,7 +140,14 @@ async function main() {
         durationMs: Date.now() - startTime,
       });
 
-      // Print nothing to avoid polluting model context
+      // Mesh badge: one system-message line for the user and one context line for the model, in the shape the
+      // descriptor declares (ui.identity.sessionStart). MESH_NO_BADGE=1 keeps SessionStart silent.
+      const mode = registry.get(harness)?.ui?.identity?.sessionStart;
+      if (mode && process.env.MESH_NO_BADGE !== "1") {
+        const info = await fetchIdentity(address, { harness, sessionId, pid, cwd });
+        const output = sessionStartOutput(mode, info ?? { harness });
+        if (output) await emitJson(output);
+      }
       process.exit(0);
       break;
     }

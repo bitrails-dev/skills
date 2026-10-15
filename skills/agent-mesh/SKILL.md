@@ -60,6 +60,8 @@ Adding a harness is one descriptor file in `src/harnesses/` plus a registry line
 
 **One-command install/update/uninstall:** `node ~/.agents/skills/agent-mesh/scripts/mesh.mjs setup` (interactive checklist; flags: `--yes --harness claude,codex --action install|update|uninstall --mcp --wake --all --dry-run --purge`).
 
+**Identity:** every session shows a mesh badge at start (hook output / toast / status per harness), the MCP tool `mesh_whoami` and `mesh whoami` print its identity; see GUIDE.md.
+
 **User guide** (install, update, opt-ins, commands, troubleshooting, recovery runbook): [docs/GUIDE.md](docs/GUIDE.md).
 
 ## Quick Start CLI

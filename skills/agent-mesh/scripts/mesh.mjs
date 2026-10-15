@@ -589,6 +589,39 @@ async function main() {
       process.exit(code);
     }
 
+    case "whoami": {
+      // mesh whoami [--session <id|name>] [--harness h] [--pid N] [--line] [--stdin]
+      // Without selectors: $MESH_SESSION_ID, else the live sessions whose cwd is the current directory.
+      const opt = (name) => {
+        const i = args.indexOf(name);
+        return i !== -1 ? args[i + 1] : undefined;
+      };
+      let sessionId = opt("--session") || process.env.MESH_SESSION_ID;
+      if (args.includes("--stdin")) {
+        // status-line friendly: the harness pipes JSON with the session id on stdin
+        let raw = "";
+        for await (const chunk of process.stdin) raw += chunk;
+        try {
+          const j = JSON.parse(raw);
+          sessionId = j.session_id || j.sessionId || sessionId;
+        } catch {}
+      }
+      const { formatIdentityBlock, formatIdentityLine } = await import("../src/presence/identity.mjs");
+      try {
+        const info = await sendIpcRequest(ipcAddress, {
+          action: "whoami",
+          payload: { harness: opt("--harness"), sessionId, pid: opt("--pid") ? Number(opt("--pid")) : undefined, cwd: sessionId || opt("--pid") ? undefined : process.cwd() },
+        });
+        if (!info.ok) throw new Error(info.error || "whoami failed");
+        console.log(args.includes("--line") ? formatIdentityLine(info) : formatIdentityBlock(info));
+        if (!info.session) process.exitCode = 1;
+      } catch (err) {
+        console.log(args.includes("--line") ? "agent-mesh: broker not running" : "Broker unreachable: " + err.message);
+        process.exitCode = 1;
+      }
+      process.exit(process.exitCode || 0);
+    }
+
     case "mcp":
     case "wake": {
       // mesh mcp|wake install|remove|status [harness...|all] [--project|--global]
@@ -870,6 +903,7 @@ Commands:
   wait --session <id> [--stream]     Block until wake-eligible mail arrives for a session (see docs/ADAPTERS.md)
   mcp install|remove|status [h|all]  Manage the opt-in MCP shim entries (mesh_send/mesh_ask/mesh_inbox/mesh_status)
   wake install|remove|status [h|all] Manage the opt-in idle-wake source (Claude hook, Codex injector)
+  whoami [--session id] [--line]     Show a session's mesh identity (by session, pid, or current directory)
   mute | unmute                      Disable/enable waking idle sessions (mail then waits for the next prompt)
   probe-wake <harness>               Guided run that records whether a harness wakes an idle session (evidence row)
   hooks install [harnesses...]       Install lifecycle hooks for specified (or detected) harnesses

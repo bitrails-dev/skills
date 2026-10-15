@@ -87,7 +87,7 @@ test("protocol: initialize, ping, tools/list, unknown method, stdout is protocol
     assert.deepEqual(init.result.capabilities, { tools: {} });
     assert.deepEqual((await shim.request("ping")).result, {});
     const tools = (await shim.request("tools/list")).result.tools.map((t) => t.name).sort();
-    assert.deepEqual(tools, ["mesh_ask", "mesh_inbox", "mesh_send", "mesh_status"]);
+    assert.deepEqual(tools, ["mesh_ask", "mesh_inbox", "mesh_send", "mesh_status", "mesh_whoami"]);
     assert.equal((await shim.request("nope/method")).error.code, -32601);
     const old = await shim.request("initialize", { protocolVersion: "1999-01-01", clientInfo: { name: "x" } });
     assert.equal(old.result.protocolVersion, "2025-06-18", "unsupported versions fall back to the latest");

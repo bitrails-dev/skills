@@ -6,6 +6,7 @@ import { join } from "node:path";
 const [kind, sessionId] = process.argv.slice(2);
 const root = join(import.meta.dirname, "..", "..", "src", "hooks");
 const calls = [];
+const badges = []; // BADGES=1: printed instead of the injection list
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 if (kind === "opencode") {
@@ -13,6 +14,7 @@ if (kind === "opencode") {
   const failFirst = process.env.FAIL_FIRST === "1";
   let n = 0;
   const client = {
+    tui: { showToast: async (arg) => void badges.push({ kind: "toast", text: arg.body.message }) },
     session: {
       async promptAsync(arg) {
         n++;
@@ -34,11 +36,12 @@ if (kind === "opencode") {
     getSessionName: () => sessionId,
     sendUserMessage: (text, opts) => calls.push({ text, opts }),
   };
+  const ctx = { ui: { setStatus: (key, text) => badges.push({ kind: "status", key, text }) } };
   mod.default(pi);
-  await handlers.session_start({ sessionId });
-  await handlers.agent_end({ sessionId });
+  await handlers.session_start({ sessionId }, ctx);
+  await handlers.agent_end({ sessionId }, ctx);
   await sleep(Number(process.env.WAIT_MS || 600));
   await handlers.session_shutdown({ reason: "quit" });
 }
-console.log(JSON.stringify(calls));
+console.log(JSON.stringify(process.env.BADGES === "1" ? badges : calls));
 process.exit(0);
