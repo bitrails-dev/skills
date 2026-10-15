@@ -179,7 +179,9 @@ unload timing under a live observer in the real daemon (only isolated daemon tes
 8. Register in `src/harnesses/index.mjs` (one import, one entry in the `harnesses` array).
 9. Fill `fixtures` (`name.setup`, `tui`, `cmdlines`); the contract suite picks the harness up automatically.
 10. Run `npm test` twice; check `mesh hooks doctor <id>`; add a row to SKILL.md harness table.
-11. If the harness has an MCP client, add an opt-in `mcp` presence source with `jsonMcpSource`/`tomlMcpSource`
+11. Decide the wake tier: run `mesh probe-wake <id>`, paste the descriptor snippet into `delivery.wake` and the
+    evidence row into section 10 (tiers above pull are rejected without evidence).
+11b. If the harness has an MCP client, add an opt-in `mcp` presence source with `jsonMcpSource`/`tomlMcpSource`
     (set `announce: false` when its servers are hosted by a shared daemon); otherwise document it as unsupported.
 12. Add driver in `src/drivers/` only if the harness should receive headless turns (separate concern).
 
@@ -216,6 +218,71 @@ Honest limits: nothing can inject into an idle Claude Code, Codex or Antigravity
 `-p --resume` would be a second writer on the same session, which the dual-writer rule forbids). A Codex wake
 would be possible through the app-server control socket (`turn/start` on the loaded thread, see section 6)
 but needs the observer client that was deliberately not built.
+
+## 10. Wake tiers (reaching an IDLE session)
+
+Delivery is a ladder on top of a universal floor. The floor (**pull**) is always there: queued mail is
+injected at the session's next prompt/turn end and a "message waiting" toast tells the human. Tiers above it
+are opt-in per harness and recorded in the descriptor as `delivery.wake` (contract: a tier above `pull`
+REQUIRES evidence `{version, date, verified, basis}`; `verified:false` = derived from schemas/types/fakes,
+never observed waking a live session).
+
+| Tier | Meaning | Launcher |
+|---|---|---|
+| pull | mail waits for the next prompt/turn end; toast floor | hook |
+| push | the harness-side component injects mail itself | plugin / extension / broker |
+| stream | a long-lived watcher; every output line wakes the model | model / hook |
+| oneshot | a background command; its exit wakes the model; must be re-armed | hook / model |
+
+### Per harness (as of 2026-10-15)
+
+| Harness | Active tier | Mechanism | Evidence | Opt-in candidate |
+|---|---|---|---|---|
+| pi | push | extension polls, `pi.sendUserMessage(..., {deliverAs: "followUp"})` always triggers a turn | pi-coding-agent types + fake-API tests, not observed live (verified: false) | - |
+| opencode | push | plugin polls, `client.session.promptAsync` | @opencode-ai/sdk types (1.19.0) + fake-client tests, not observed live (verified: false) | - |
+| codex | pull | - | - | **push** via broker injector: observer connection sends `turn/start` to an IDLE thread (`mesh --init codex --wake`). Verified against a throwaway app-server 0.162.1 daemon in `tests/codex-wake-test.mjs` (idle thread injected, active thread skipped, version pin, reconnect); not run against the live TUI |
+| claude | pull | Stop-hook block + UserPromptSubmit additionalContext | - | **oneshot** via `asyncRewake` hook running `mesh wait` (`mesh --init claude --wake`): present in the 2.1.300 hook schema ("runs in background and wakes the model on exit code 2"), hook behavior covered by `tests/mesh-wait-test.mjs`; idle wake NOT yet observed (verified: false). Also present in 2.1.300: Channels (MCP `notifications/claude/channel`), but they need a session started with `--channels` (and an allowlist / org policy), so it cannot reach already-running sessions and is not shipped |
+| antigravity | pull | PreInvocation injectSteps + Stop continue | agy hook contract (embedded docs): hooks are synchronous command hooks that only run inside a turn; no background wake found | none known |
+
+Nothing is promoted to the active tier without a probe run: use `mesh probe-wake <harness>` (guided: arms a
+nonce emitter, asks what the harness did, prints the descriptor snippet and the evidence row to paste above).
+
+### Building blocks
+
+- `mesh wait --session <id> [--stream] [--harness-pid N]`: broker `wait` long-poll. Strict claim, 2s debounce
+  batching, one listener per session (lease bound to the waiter pid; a second waiter prints "already armed" and
+  exits), exits when the harness pid dies / session closes / lease revoked / broker gone, acks only after the
+  mail was flushed to stdout, prints how to re-arm (oneshot).
+- Claude wake hook (`src/hooks/mesh-wake-hook.mjs`): registered with `async: true, asyncRewake: true` on
+  SessionStart and Stop; Stop re-arms after every turn (lease makes duplicates exit at once). Exit code 2 plus
+  the enveloped mail on stderr is the wake. No permission prompt is involved (hooks are not tool calls); the
+  model replying with `mesh reply` through Bash may prompt: add `Bash(mesh reply:*)` to its allow list.
+- Codex injector (`src/harnesses/codex-wake.mjs`): started by the broker when `<meshHome>/.agent-mesh/wake.json`
+  has `{"codex": true}` (written by `mesh --init codex --wake`; picked up within 30s or on restart).
+
+### Guardrails (loops, cost, trust)
+
+1. **Strict claims**: a session claims only mail addressed to it, plus untargeted mail only when it is the
+   harness's primary live interactive session (most recently active real session).
+2. **Hop propagation**: a harness replying to mail it was just delivered inherits that ticket as parent with
+   hops+1 (10 min window), so the existing 6-hop limit also stops interactive ping-pong.
+3. **Wake policy**: only `ask`/`reply`/urgent mail may wake an idle session (`notify` waits for the next
+   prompt); per-session wake budget (default 6 per 10 min, `MESH_WAKE_BUDGET`/`MESH_WAKE_WINDOW_MS`); global
+   `mesh mute` / `mesh unmute`. A refused wake falls back to pull + toast, never to dropping mail.
+4. **Untrusted input**: one shared formatter (hooks, plugins, extension, MCP, `mesh wait`, Codex injector)
+   strips ANSI/control characters, caps size, and wraps each message in a provenance envelope that tells the
+   model it is data from another agent, not an instruction from its user.
+5. **Idle only**: the Codex injector checks thread status first (never interrupts a running turn); plugins skip
+   busy sessions.
+
+### Known limitations
+
+- Claude/Antigravity idle TUIs stay at pull until a probe proves the Claude candidate; Codex wake needs the
+  daemon to be running and the thread to be loaded (a closed TUI's thread is not wakeable, mail waits).
+- The Codex injector is pinned to app-server 0.162.x; other versions disable it (mail falls back to pull).
+- An `asyncRewake` hook is subject to Claude's own loop protection ("exited 2 again" is not re-woken).
+- Wake delivery cannot tell which of several untargeted-eligible sessions the human is looking at; it uses the
+  most recently active one.
 
 ## 8. Open decisions and risks
 

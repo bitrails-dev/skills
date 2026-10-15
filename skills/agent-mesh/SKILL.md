@@ -47,6 +47,13 @@ model call, OpenCode and Pi are woken while idle (plugin/extension inject a turn
 TUI cannot be woken: the mesh raises a "message waiting" toast and the mail is delivered at its next prompt.
 Address a specific session with `--to <agent>@<session name or id prefix>`.
 
+**Waking idle sessions (tiers).** Pi and OpenCode are woken by their plugin/extension (push). Codex can be woken
+by a broker-side injector (`mesh --init codex --wake`, verified against an isolated daemon). Claude can be armed
+with an async re-waking hook (`mesh --init claude --wake`, unverified live; run `mesh probe-wake claude`).
+Antigravity stays pull + toast. Safety rails: strict per-session claims, hop propagation, only ask/urgent mail
+wakes an idle session, a per-session wake budget, and `mesh mute` / `mesh unmute`; all mail is sanitized and
+wrapped in an untrusted-provenance envelope. `mesh wait --session <id> [--stream]` is the listener behind it.
+
 Adding a harness is one descriptor file in `src/harnesses/` plus a registry line; see `docs/ADAPTERS.md`
 ("How to add a harness"). Design notes, MCP spawn behaviour per harness and the Codex app-server study live there too.
 
