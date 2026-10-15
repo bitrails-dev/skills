@@ -51,7 +51,7 @@ async function announce(event, pi, ev = {}, name = sessionName(pi)) {
 }
 
 /** Claims queued mail and starts a turn with it (only while the agent is idle). */
-async function deliver(pi, ev = {}) {
+async function deliver(pi, ev = {}, wake = false) {
   if (process.env.MESH_AGENT || agentBusy || delivering || typeof pi?.sendUserMessage !== "function") return;
   const sessionId = currentId || sessionName(pi) || ev?.sessionId;
   if (!sessionId) return;
@@ -59,7 +59,7 @@ async function deliver(pi, ev = {}) {
   try {
     await deliverInbox(getAddress(), "pi", sessionId, (text) => {
       pi.sendUserMessage(text, { deliverAs: "followUp" });
-    });
+    }, undefined, wake);
   } catch {
     // never let delivery errors reach Pi
   } finally {
@@ -79,7 +79,7 @@ export default function piPresenceExtension(pi) {
     pi.on("session_start", async (ev) => {
       await announce("start", pi, ev);
       if (!pollTimer) {
-        pollTimer = setInterval(() => { void deliver(pi); }, POLL_MS);
+        pollTimer = setInterval(() => { void deliver(pi, {}, true); }, POLL_MS);
         pollTimer.unref?.();
       }
     });

@@ -225,6 +225,61 @@ export class MeshRepository {
    * @param {string|null} [sessionId=null]
    * @returns {Array<object>} Claimed message rows.
    */
+  /**
+   * The single live interactive session of a harness that receives UNTARGETED mail: the most recently active
+   * real session (provisional `tui:`/`mcp:` rows only count when nothing else is live).
+   * @param {string} harness
+   * @returns {string|null}
+   */
+  primaryInteractiveSession(harness) {
+    const row = this.db
+      .prepare(
+        `SELECT session_id FROM sessions
+         WHERE harness = ? AND origin = 'interactive' AND state NOT IN ('lost', 'closed')
+         ORDER BY (session_id LIKE 'tui:%' OR session_id LIKE 'mcp:%') ASC, updated_at DESC LIMIT 1`
+      )
+      .get(harness);
+    return row?.session_id ?? null;
+  }
+
+  /**
+   * Strict inbox claim for one session: its own targeted mail, plus untargeted mail only when it is the
+   * primary interactive session of the harness (or the harness has no other live session).
+   * `wakeOnly` restricts to mail allowed to wake an idle session (ask/reply or urgent).
+   * @param {string} agentId
+   * @param {string|null} sessionId  null = headless/CLI claimer: untargeted mail only
+   * @param {{ wakeOnly?: boolean }} [opts]
+   */
+  claimInboxForSession(agentId, sessionId, { wakeOnly = false } = {}) {
+    const primary = this.primaryInteractiveSession(agentId);
+    const untargeted = sessionId === null || primary === null || primary === sessionId ? 1 : 0;
+    const eligible = wakeOnly ? " AND (kind IN ('ask', 'reply') OR priority >= 1)" : "";
+    return this.db
+      .prepare(
+        `UPDATE messages SET status = 'claimed', delivered_at = ?
+         WHERE to_agent = ? AND status = 'pending'
+           AND ((? IS NOT NULL AND to_session = ?) OR (to_session IS NULL AND ? = 1))${eligible}
+         RETURNING *`
+      )
+      .all(Date.now(), agentId, sessionId, sessionId, untargeted);
+  }
+
+  /**
+   * Most recent ticket delivered (or being delivered) to an agent within the window: the parent of anything
+   * that agent sends next, so interactive sessions cannot ping-pong without hitting the hop limit.
+   * @returns {{ id: string, hops: number }|null}
+   */
+  latestDeliveredTo(agentId, sinceMs) {
+    return (
+      this.db
+        .prepare(
+          `SELECT id, hops FROM messages WHERE to_agent = ? AND status IN ('claimed', 'delivered') AND delivered_at >= ?
+           ORDER BY delivered_at DESC LIMIT 1`
+        )
+        .get(agentId, sinceMs) ?? null
+    );
+  }
+
   claimMessagesForAgent(agentId, sessionId = null) {
     const now = Date.now();
     return this.stmtClaimMessages.all(now, agentId, sessionId, sessionId);

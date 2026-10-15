@@ -220,14 +220,7 @@ async function main() {
         }, 1, { timeoutMs: 800 });
 
         if (res.ok && res.messages && res.messages.length > 0) {
-          const formatted = res.messages
-            .map((m) => `[From: ${m.from_agent} | Ticket: ${m.id}]:\n${m.body}`)
-            .join("\n\n---\n\n");
-
-          const payload = {
-            decision: "block",
-            reason: `[AGENT-MESH INBOX NOTIFICATION]\nYou have ${res.messages.length} message(s) waiting from other agents in the mesh:\n\n${formatted}\n\nPlease review and respond as appropriate.`,
-          };
+          const payload = { decision: "block", reason: formatMessages(res.messages) };
           await emitJson(payload);
 
           // Acknowledge delivery

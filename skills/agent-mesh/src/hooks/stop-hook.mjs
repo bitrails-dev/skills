@@ -7,7 +7,8 @@
  * delivery so tickets do not stay in 'claimed' limbo (H5).
  */
 
-import { getIpcAddress, sendIpcRequest, resolveIpcAddress } from "../ipc.mjs";
+import { sendIpcRequest, resolveIpcAddress } from "../ipc.mjs";
+import { formatMessages } from "../presence/inbox-format.mjs";
 
 /**
  * Reads Claude Code hook input from stdin.
@@ -66,14 +67,7 @@ async function main() {
     });
 
     if (res.ok && res.messages && res.messages.length > 0) {
-      const formatted = res.messages
-        .map((m) => `[From: ${m.from_agent} | Ticket: ${m.id}]:\n${m.body}`)
-        .join("\n\n---\n\n");
-
-      const payload = {
-        decision: "block",
-        reason: `[AGENT-MESH INBOX NOTIFICATION]\nYou have ${res.messages.length} message(s) waiting from other agents in the mesh:\n\n${formatted}\n\nPlease review and respond as appropriate.`,
-      };
+      const payload = { decision: "block", reason: formatMessages(res.messages) };
       process.stdout.write(JSON.stringify(payload) + "\n");
 
       // Acknowledge: the block reason injects these messages into the next turn,

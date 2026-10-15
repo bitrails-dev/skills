@@ -25,12 +25,15 @@ import { isProcessAlive } from "./harnesses/shared/process.mjs";
 import { TuiScanner } from "./presence/tui-scanner.mjs";
 import { watchTranscripts, pollExternalSessions } from "./presence/name-watch.mjs";
 import { McpDedupe } from "./presence/mcp-dedupe.mjs";
+import { WakePolicy } from "./presence/wake-policy.mjs";
 
 export { isProcessAlive };
 
 
 /** A claim not acked within this window is returned to pending. */
 const CLAIM_TTL_MS = 90 * 1000;
+/** A message sent within this window of receiving one is a reaction to it (hop propagation). */
+const HOP_WINDOW_MS = 10 * 60 * 1000;
 /** At most one "message waiting" toast per target session in this window. */
 const WAITING_TOAST_MS = 30 * 1000;
 
@@ -74,6 +77,7 @@ export class AgentMeshBroker {
       processInfo: options.processInfo,
     });
     this.mcp = new McpDedupe({ repo: this.repo, notify: (p) => this.notifyDesktop(p), graceMs: options.mcpGraceMs });
+    this.wake = new WakePolicy({ meshHome: process.env.MESH_HOME || homedir(), ...options.wake });
     this.waitingToasts = new Map(); // session id -> last "message waiting" toast time
     this.transcripts = new Map(); // sessionId -> { harness, path, mtime } for /rename detection
     this.turnRetries = new Map(); // agentId -> consecutive failed turns
@@ -89,6 +93,19 @@ export class AgentMeshBroker {
     this.registerDriver("antigravity", createAntigravityDriver());
     this.registerDriver("codex", createCodexDriver());
     this.registerDriver("acp", createAcpDriver());
+  }
+
+  /**
+   * Broker-side hop propagation: a message sent by a harness session inherits the most recently delivered
+   * ticket to that harness as parent and carries its hop count + 1 (so the 6-hop limit also stops loops between
+   * interactive sessions that never pass hops themselves).
+   */
+  propagateHops(msg) {
+    if (!registry.get(msg.from)) return; // humans/CLI start fresh chains
+    const parent = this.repo.latestDeliveredTo(this.resolveAgent(msg.from), Date.now() - HOP_WINDOW_MS);
+    if (!parent) return;
+    msg.parentId ||= parent.id;
+    msg.hops = Math.max(msg.hops || 0, (parent.hops || 0) + 1);
   }
 
   /**
@@ -287,6 +304,7 @@ export class AgentMeshBroker {
 
         if (!msg.id) msg.id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         if (msg.hops === undefined) msg.hops = 0;
+        this.propagateHops(msg);
 
         // Hop limit check (H3)
         if (msg.hops >= 6) {
@@ -385,6 +403,12 @@ export class AgentMeshBroker {
         return { ok: true, state: res.state, bound: tui.bound };
       }
 
+      case "mute":
+      case "unmute": {
+        this.wake.setMuted(req.action === "mute");
+        return { ok: true, wake: this.wake.snapshot() };
+      }
+
       case "status": {
         this.reapStaleLeases();
         const pending = this.repo.getPendingCounts();
@@ -400,6 +424,7 @@ export class AgentMeshBroker {
           pid: process.pid,
           version: this.version,
           busyAgents: Array.from(this.busyAgents),
+          wake: this.wake.snapshot(),
           pendingCounts: pending,
           sessions: activeSessions,
           liveSessions,
@@ -434,7 +459,17 @@ export class AgentMeshBroker {
         // Atomically claims messages so interactive hooks consume them without duplicates
         const targetAgent = this.resolveAgent(req.payload.agent);
         const sessionId = req.payload.sessionId || null;
-        const messages = this.repo.claimMessagesForAgent(targetAgent, sessionId);
+        const isWake = Boolean(req.payload.wake);
+        if (isWake) {
+          // Idle-session wake: policy first (mute switch, per-session budget); falls back to pull + toast
+          const verdict = this.wake.check(sessionId || targetAgent);
+          if (!verdict.ok) {
+            this.announceWaiting({ to: targetAgent, toSession: sessionId, from: "mesh" });
+            return { ok: true, messages: [], throttled: verdict.reason };
+          }
+        }
+        const messages = this.repo.claimInboxForSession(targetAgent, sessionId, { wakeOnly: isWake });
+        if (isWake && messages.length > 0) this.wake.record(sessionId || targetAgent);
         if (messages.length > 0) {
           this.notifyDesktop({
             harness: targetAgent,

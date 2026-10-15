@@ -47,14 +47,14 @@ async function announce(event, sessionId, cwd, name) {
 }
 
 /** Claims queued mail and starts a turn with it in the (idle) real session. */
-async function deliver(client) {
+async function deliver(client, wake = false) {
   if (process.env.MESH_AGENT || delivering || sessionBusy || !rootSession || !client?.session?.promptAsync) return;
   delivering = true;
   try {
     const target = rootSession;
     await deliverInbox(resolveIpcAddress(process.cwd()), "opencode", target, async (text) => {
       await client.session.promptAsync({ path: { id: target }, body: { parts: [{ type: "text", text }] } });
-    }, IPC);
+    }, IPC, wake);
   } catch {
     // never let delivery errors reach OpenCode
   } finally {
@@ -74,7 +74,7 @@ export default async function opencodePresencePlugin(ctx = {}) {
 
   await announce("start", currentSession, ctx.directory);
 
-  const timer = setInterval(() => { void deliver(ctx.client); }, POLL_MS);
+  const timer = setInterval(() => { void deliver(ctx.client, true); }, POLL_MS);
   timer.unref?.();
 
   return {

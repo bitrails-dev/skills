@@ -19,10 +19,12 @@ export const send = (address, action, payload, options) =>
  * @param {string} sessionId
  * @param {(text: string, messages: object[]) => Promise<void>|void} inject
  * @param {object} [options] IPC options
+ * @param {boolean} [wake=false] true for timer-driven claims: the broker's wake policy (ask/urgent only, budget,
+ *   mute) applies; event-driven claims at a turn boundary deliver everything
  * @returns {Promise<number>} number of delivered messages
  */
-export async function deliverInbox(address, agent, sessionId, inject, options) {
-  const res = await send(address, "claim_inbox", { agent, sessionId }, options);
+export async function deliverInbox(address, agent, sessionId, inject, options, wake = false) {
+  const res = await send(address, "claim_inbox", { agent, sessionId, wake }, options);
   const messages = res?.ok && Array.isArray(res.messages) ? res.messages : [];
   if (messages.length === 0) return 0;
   const ids = messages.map((m) => m.id);
