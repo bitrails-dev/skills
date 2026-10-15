@@ -190,3 +190,34 @@ test("registry ids and aliases are unique across all descriptors", () => {
   const names = registry.all().flatMap((h) => [h.id, ...h.aliases]);
   assert.equal(new Set(names).size, names.length);
 });
+
+test("claude global MCP scope edits only the isolated HOME (CLI when on PATH, file edit otherwise)", () => {
+  const home = mkdtempSync(join(tmpdir(), "mesh-contract-claude-home-"));
+  const saved = { USERPROFILE: process.env.USERPROFILE, HOME: process.env.HOME };
+  process.env.USERPROFILE = home;
+  process.env.HOME = home;
+  try {
+    const file = join(home, ".claude.json");
+    writeFileSync(file, JSON.stringify({ customKey: "kept", mcpServers: { other: { type: "stdio", command: "x", args: [], env: {} } } }));
+    const opts = { global: true, mcp: true };
+    const res = installHarness("claude", opts, home);
+    assert.equal(res.ok, true, res.error);
+    assert.equal(diagnoseMcp("claude", { global: true }, home).targetPath, file);
+    const data = JSON.parse(readFileSync(file, "utf8"));
+    assert.equal(data.customKey, "kept", "unrelated settings survive");
+    assert.ok(data.mcpServers.other, "other servers survive");
+    assert.equal(data.mcpServers["agent-mesh"].command, "node");
+    assert.deepEqual(data.mcpServers["agent-mesh"].args.slice(-2), ["--harness", "claude"]);
+    assert.equal(installHarness("claude", opts, home).ok, true, "idempotent");
+
+    assert.equal(uninstallHarness("claude", { global: true }, home).ok, true);
+    const after = JSON.parse(readFileSync(file, "utf8"));
+    assert.equal(after.mcpServers["agent-mesh"], undefined);
+    assert.ok(after.mcpServers.other && after.customKey === "kept");
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});

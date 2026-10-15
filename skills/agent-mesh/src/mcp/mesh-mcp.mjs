@@ -37,7 +37,7 @@ const TOOLS = [
   },
   {
     name: "mesh_ask",
-    description: "Ask another agent to do work and answer. The reply arrives later in your mesh inbox (call mesh_inbox).",
+    description: "Ask another agent a question or to do work. NON-BLOCKING: this only enqueues the request and returns a ticket; the answer arrives later as a message in your mesh inbox, so call mesh_inbox to read it.",
     inputSchema: {
       type: "object",
       properties: {

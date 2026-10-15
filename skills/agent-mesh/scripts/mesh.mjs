@@ -222,7 +222,7 @@ async function main() {
     case "init":
     case "setup":
     case "install": {
-      const { harnesses, isProject, isGlobal } = parseHarnessSelection(cmd, args);
+      const { harnesses, isGlobal } = parseHarnessSelection(cmd, args);
       const scope = isGlobal ? "global" : "project";
 
       console.log(`\n==================================================`);
@@ -653,7 +653,7 @@ async function main() {
         break;
       }
 
-      const { harnesses, isProject, isGlobal } = parseHarnessSelection(sub, remainingArgs);
+      const { harnesses, isGlobal } = parseHarnessSelection(sub, remainingArgs);
       const scope = isGlobal ? "global" : "project";
 
       let targets = harnesses;

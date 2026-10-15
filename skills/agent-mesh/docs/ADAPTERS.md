@@ -198,9 +198,20 @@ unload timing under a live observer in the real daemon (only isolated daemon tes
 - R3: circular imports (broker -> registry -> shared -> common); keep `shared/` free of broker imports.
 - R4 (mitigated): MCP- and hook-announced sessions are deduped in the broker (`mcp-dedupe.mjs`), covered by
   `tests/mcp-shim-test.mjs`.
-- R5: Claude user-scope MCP lives in `~/.claude.json`, which running Claude sessions rewrite constantly; the
-  installer does a short read-modify-write with a `.bak`. A concurrent Claude write in that window could be
-  lost (project scope `.mcp.json` has no such risk).
+- R5 (mitigated): Claude user-scope MCP lives in `~/.claude.json`, which running sessions rewrite constantly.
+  The installer uses `claude mcp add/remove --scope user` (HOME/USERPROFILE pointed at the managed file's
+  directory) when the CLI is on PATH and falls back to a direct edit with `.bak` otherwise. Project scope
+  (`.mcp.json`) is edited directly.
 - R6: The shim adds a long-lived node process per session per harness (cheap: idle stdio, one pwsh walk at
   start on Windows for `walk` harnesses).
-- D6 (decision needed): ship MCP as opt-in only (`--mcp`), or default-on per harness once validated?
+- D6 (decided): MCP stays opt-in (`--mcp`).
+- D7 (decided): `mesh_ask` is enqueue + reply via `mesh_inbox` (documented in the tool description); no blocking wait.
+
+### Known limitations
+
+- Codex subagent threads (`thread_spawn`) run hooks inside the shared daemon and are not filtered: they can
+  appear as extra rows until their TTL. Left as is on purpose.
+- `bindTui` can swap two unbound Codex TUIs opened before either sends a prompt (Phase C evidence: no
+  deterministic TUI pid <-> thread binding exists).
+- Claude may normalize/migrate unrelated keys of `~/.claude.json` when the CLI rewrites it; that is Claude's own
+  behavior, not the installer's.
