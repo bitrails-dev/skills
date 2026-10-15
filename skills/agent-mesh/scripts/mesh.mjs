@@ -516,6 +516,44 @@ async function main() {
       break;
     }
 
+    case "wait": {
+      // mesh wait --session <id> [--agent <harness>] [--stream] [--harness-pid N] [--debounce ms] [--exit-code-on-mail N]
+      const opt = (name) => {
+        const i = args.indexOf(name);
+        return i !== -1 ? args[i + 1] : undefined;
+      };
+      const sessionId = opt("--session") || process.env.MESH_SESSION_ID;
+      if (!sessionId) {
+        console.error("Usage: mesh wait --session <id> [--agent <harness>] [--stream] [--harness-pid N] [--debounce ms]");
+        process.exit(1);
+      }
+      const { runWait } = await import("../src/wait/mesh-wait.mjs");
+      const stream = args.includes("--stream");
+      const result = await runWait({
+        address: ipcAddress,
+        sessionId,
+        agent: opt("--agent"),
+        stream,
+        harnessPid: opt("--harness-pid") ? Number(opt("--harness-pid")) : undefined,
+        debounceMs: opt("--debounce") !== undefined ? Number(opt("--debounce")) : undefined,
+        mailExitCode: opt("--exit-code-on-mail") ? Number(opt("--exit-code-on-mail")) : 0,
+        rearmCommand: stream ? undefined : `mesh wait --session ${sessionId}${opt("--agent") ? ` --agent ${opt("--agent")}` : ""}`,
+      });
+      process.exit(result.code);
+    }
+
+    case "mute":
+    case "unmute": {
+      try {
+        const res = await sendIpcRequest(ipcAddress, { action: cmd });
+        console.log(res.ok ? `Idle-session wake delivery is now ${res.wake.muted ? "MUTED (mail waits for the next prompt)" : "enabled"}.` : `Error: ${res.error}`);
+      } catch (err) {
+        console.error(`Failed: ${err.message}`);
+        process.exit(1);
+      }
+      break;
+    }
+
     case "inbox": {
       const delivered = args.includes("--delivered");
       const agent = args.find((a, i) => !a.startsWith("--") && args[i - 1] !== "--limit");
@@ -740,6 +778,8 @@ Commands:
   start                              Start the local mesh broker daemon in the background
   stop                               Stop the running broker daemon
   status                             Display current agent sessions, busy status, and queue depth
+  wait --session <id> [--stream]     Block until wake-eligible mail arrives for a session (see docs/ADAPTERS.md)
+  mute | unmute                      Disable/enable waking idle sessions (mail then waits for the next prompt)
   hooks install [harnesses...]       Install lifecycle hooks for specified (or detected) harnesses
   hooks uninstall [harnesses...]     Remove agent-mesh hooks cleanly
   hooks doctor, doctor               Inspect configuration, verify broker, and view recent hook logs

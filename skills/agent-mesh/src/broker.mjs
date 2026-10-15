@@ -78,6 +78,7 @@ export class AgentMeshBroker {
     });
     this.mcp = new McpDedupe({ repo: this.repo, notify: (p) => this.notifyDesktop(p), graceMs: options.mcpGraceMs });
     this.wake = new WakePolicy({ meshHome: process.env.MESH_HOME || homedir(), ...options.wake });
+    this.waiters = new Map(); // session id -> { pid, seen } (single listener per session)
     this.waitingToasts = new Map(); // session id -> last "message waiting" toast time
     this.transcripts = new Map(); // sessionId -> { harness, path, mtime } for /rename detection
     this.turnRetries = new Map(); // agentId -> consecutive failed turns
@@ -93,6 +94,55 @@ export class AgentMeshBroker {
     this.registerDriver("antigravity", createAntigravityDriver());
     this.registerDriver("codex", createCodexDriver());
     this.registerDriver("acp", createAcpDriver());
+  }
+
+  /**
+   * Long-poll for wake-eligible mail of ONE session (`mesh wait`). One listener per session: the lease is bound
+   * to the waiter's pid. Returns { status: "mail" | "timeout" | "already-listening" | "session-closed" |
+   * "harness-gone" | "revoked" | "throttled" | "broker-stopping", messages? }. Acking is the waiter's job.
+   */
+  async waitForMail({ agent, sessionId, pid, harnessPid, timeoutMs, debounceMs, oneshot }) {
+    if (!sessionId) return { ok: false, error: "sessionId required" };
+    const row = this.repo.listLiveSessions().find((s) => s.session_id === sessionId);
+    const target = this.resolveAgent(agent || row?.harness);
+    if (!target) return { ok: false, error: "unknown session: pass agent" };
+    const waiterPid = Number(pid) || 0;
+    const lease = this.waiters.get(sessionId);
+    if (lease && lease.pid !== waiterPid && isProcessAlive(lease.pid) && Date.now() - lease.seen < 30000) {
+      return { ok: true, status: "already-listening" };
+    }
+    this.waiters.set(sessionId, { pid: waiterPid, seen: Date.now() });
+
+    const deadline = Date.now() + Math.min(Math.max(Number(timeoutMs) || 25000, 100), 55000);
+    const settle = Math.min(Math.max(debounceMs === undefined ? 2000 : Number(debounceMs) || 0, 0), 5000);
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    while (Date.now() < deadline) {
+      if (!this.running || this.draining) return { ok: true, status: "broker-stopping" };
+      if (this.waiters.get(sessionId)?.pid !== waiterPid) return { ok: true, status: "revoked" };
+      if (harnessPid && !isProcessAlive(Number(harnessPid))) {
+        this.waiters.delete(sessionId);
+        return { ok: true, status: "harness-gone" };
+      }
+      if (!this.repo.listLiveSessions().some((s) => s.session_id === sessionId)) {
+        this.waiters.delete(sessionId);
+        return { ok: true, status: "session-closed" };
+      }
+      this.waiters.set(sessionId, { pid: waiterPid, seen: Date.now() });
+      const verdict = this.wake.check(sessionId);
+      if (!verdict.ok) return { ok: true, status: "throttled", reason: verdict.reason };
+      let messages = this.repo.claimInboxForSession(target, sessionId, { wakeOnly: true });
+      if (messages.length > 0) {
+        if (settle > 0) {
+          await sleep(settle); // batch a burst into one wake
+          messages = messages.concat(this.repo.claimInboxForSession(target, sessionId, { wakeOnly: true }));
+        }
+        this.wake.record(sessionId);
+        if (oneshot) this.waiters.delete(sessionId);
+        return { ok: true, status: "mail", messages };
+      }
+      await sleep(400);
+    }
+    return { ok: true, status: "timeout" };
   }
 
   /**
@@ -402,6 +452,9 @@ export class AgentMeshBroker {
 
         return { ok: true, state: res.state, bound: tui.bound };
       }
+
+      case "wait":
+        return this.waitForMail(req.payload || {});
 
       case "mute":
       case "unmute": {
