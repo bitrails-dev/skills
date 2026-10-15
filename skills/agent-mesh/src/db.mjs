@@ -255,6 +255,16 @@ export class MeshRepository {
   }
 
   /**
+   * Re-addresses pending messages of `fromAgent` (an unroutable name) to a real agent/session.
+   * @returns {number} Updated row count.
+   */
+  rerouteMessages(fromAgent, toAgent, toSession) {
+    return this.db
+      .prepare("UPDATE messages SET to_agent = ?, to_session = COALESCE(to_session, ?) WHERE to_agent = ? AND status = 'pending'")
+      .run(toAgent, toSession, fromAgent).changes;
+  }
+
+  /**
    * Returns claimed-but-never-acked messages to pending (a hook died between claim and ack).
    * @param {number} cutoffMs claims older than this timestamp are restored
    * @param {string[]} [skipAgents] agents with an in-flight headless turn (their claims are legitimately long)

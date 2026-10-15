@@ -196,3 +196,19 @@ test("MCP tool results carry a 'you have mail' hint while mail is waiting", asyn
   child.stdin.end();
   await new Promise((r) => child.on("exit", r));
 });
+
+test("a session name used as the target routes to that session's harness (and orphaned mail is re-addressed)", async () => {
+  await session("codex", "019c-codex-thread-cccc", "named-target", process.ppid);
+  assert.ok((await send("named-target", "to a session name")).ok);
+  assert.deepEqual((await pending("codex")).map((m) => [m.body, m.to_session]), [["to a session name", "019c-codex-thread-cccc"]]);
+  await claimAndAck("codex", "019c-codex-thread-cccc");
+
+  // mail queued earlier under the bare session name (before this routing existed)
+  broker.repo.enqueueMessage({
+    id: "msg-orphan-1", conversationId: "c", from: "tester", to: "named-target", kind: "notify", priority: 0, hops: 0, body: "orphan by name",
+  });
+  assert.equal((await pending("named-target")).length, 1);
+  broker.reapStaleLeases();
+  assert.equal((await pending("named-target")).length, 0);
+  assert.deepEqual((await claimAndAck("codex", "019c-codex-thread-cccc")).map((m) => m.body), ["orphan by name"]);
+});

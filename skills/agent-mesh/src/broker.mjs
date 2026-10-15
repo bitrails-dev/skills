@@ -92,6 +92,34 @@ export class AgentMeshBroker {
   }
 
   /**
+   * Resolves the `to` of a message. Known harness/driver names (and aliases) are agents; anything else is
+   * treated as a session reference (exact id, name, unique id prefix) and routed to that session's harness.
+   * @returns {{ agent: string, session: string|null }}
+   */
+  resolveTarget(name) {
+    const agent = this.resolveAgent(name);
+    if (registry.get(agent) || this.drivers.has(agent)) return { agent, session: null };
+    const lower = String(name || "").toLowerCase();
+    const live = this.repo.listLiveSessions();
+    const hit =
+      live.find((s) => s.session_id === name) ||
+      live.find((s) => s.name && s.name.toLowerCase() === lower) ||
+      (lower.length >= 4 && live.filter((s) => s.session_id.toLowerCase().startsWith(lower)).length === 1
+        ? live.find((s) => s.session_id.toLowerCase().startsWith(lower))
+        : null);
+    return hit ? { agent: hit.harness, session: hit.session_id } : { agent, session: null };
+  }
+
+  /** Re-addresses pending mail whose `to` is a session name/id (sent before such targets were routed). */
+  rerouteOrphans() {
+    for (const { to_agent: to } of this.repo.getPendingCounts()) {
+      if (registry.get(to) || this.drivers.has(to)) continue;
+      const t = this.resolveTarget(to);
+      if (t.agent !== to) this.repo.rerouteMessages(to, t.agent, t.session);
+    }
+  }
+
+  /**
    * Resolves a user-supplied session reference (`agent@ref`) to a session id: exact id, exact name
    * (case-insensitive) or unique id prefix among the agent's live sessions. Unknown refs pass through.
    */
@@ -252,8 +280,9 @@ export class AgentMeshBroker {
           toTarget = parts[0];
           toSession = parts[1];
         }
-        msg.to = this.resolveAgent(toTarget);
-        msg.toSession = this.resolveSessionRef(msg.to, toSession);
+        const target = this.resolveTarget(toTarget);
+        msg.to = target.agent;
+        msg.toSession = this.resolveSessionRef(msg.to, toSession) || target.session;
         msg.from = this.resolveAgent(msg.from);
 
         if (!msg.id) msg.id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -503,6 +532,9 @@ export class AgentMeshBroker {
    * and transitions dead interactive sessions to closed.
    */
   reapStaleLeases() {
+    try {
+      this.rerouteOrphans();
+    } catch {}
     // Tickets claimed by a hook that died before acking must not stay claimed forever (at-least-once)
     try {
       this.repo.restoreStaleClaims(Date.now() - CLAIM_TTL_MS, [...this.busyAgents]);
