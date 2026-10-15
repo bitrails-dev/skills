@@ -14,7 +14,7 @@ process.env.MESH_HOME = mkdtempSync(join(tmpdir(), "mesh-test-home-"));
 
 const registry = await import("../src/harnesses/index.mjs");
 const { classifyCmdline } = await import("../src/harnesses/shared/process.mjs");
-const { installHarness, uninstallHarness, diagnoseHarness, diagnoseMcp } = await import("../src/hooks/installer.mjs");
+const { installHarness, uninstallHarness, diagnoseHarness, diagnoseMcp, diagnoseWake } = await import("../src/hooks/installer.mjs");
 const { AgentMeshBroker } = await import("../src/broker.mjs");
 const { sendIpcRequest } = await import("../src/ipc.mjs");
 
@@ -87,6 +87,24 @@ async function runContract(t, h) {
     assert.equal(uninstallHarness(h.id, opts, root).ok, true);
     assert.equal(diagnoseMcp(h.id, opts, root).installed, false);
     assert.ok(readFileSync(mcp.targetPath, "utf8").includes("keep"), "foreign config survives uninstall");
+  });
+
+  await t.test("wake source is opt-in, round-trips, keeps foreign config, and is always removed on uninstall", () => {
+    if (!h.presence.some((s) => s.kind === "wake")) return;
+    const root = mkdtempSync(join(tmpdir(), `mesh-contract-wake-${h.id}-`));
+    const opts = { global: false };
+    assert.equal(diagnoseWake(h.id, opts, root).supported, true);
+    assert.equal(installHarness(h.id, opts, root).ok, true);
+    assert.equal(diagnoseWake(h.id, opts, root).installed, false, "default install must not add the wake source");
+
+    const withWake = installHarness(h.id, { ...opts, wake: true }, root);
+    assert.equal(withWake.ok, true, withWake.error);
+    assert.equal(diagnoseWake(h.id, opts, root).installed, true);
+    assert.equal(installHarness(h.id, { ...opts, wake: true }, root).ok, true, "idempotent");
+    assert.equal(diagnoseHarness(h.id, opts, root).installed, true, "presence hooks unaffected");
+
+    assert.equal(uninstallHarness(h.id, opts, root).ok, true);
+    assert.equal(diagnoseWake(h.id, opts, root).installed, false);
   });
 
   await t.test("name resolution from fixture (and null for an unknown session)", () => {

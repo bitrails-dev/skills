@@ -17,6 +17,7 @@ import {
   uninstallHarness,
   diagnoseHarness,
   diagnoseMcp,
+  diagnoseWake,
   autoDiscoverHarnesses,
   normalizeHarnessName,
   SUPPORTED_HARNESSES,
@@ -242,7 +243,7 @@ async function main() {
       }
 
       for (const h of targets) {
-        const res = installHarness(h, { global: isGlobal, mcp: process.argv.includes("--mcp") }, rootDir);
+        const res = installHarness(h, { global: isGlobal, mcp: process.argv.includes("--mcp"), wake: process.argv.includes("--wake") }, rootDir);
         if (res.ok) {
           console.log(`[${res.harness.toUpperCase()}:${scope}] Presence hooks registered -> ${res.targetPath}`);
           if (existsSync(`${res.targetPath}.bak`)) console.log(`  (Backup created: ${res.targetPath}.bak)`);
@@ -737,7 +738,7 @@ async function main() {
       if (sub === "install") {
         console.log(`\n--- INSTALLING AGENT MESH LIFECYCLE HOOKS (${scope.toUpperCase()}) ---`);
         for (const h of targets) {
-          const res = installHarness(h, { global: isGlobal, mcp: process.argv.includes("--mcp") }, rootDir);
+          const res = installHarness(h, { global: isGlobal, mcp: process.argv.includes("--mcp"), wake: process.argv.includes("--wake") }, rootDir);
           if (res.ok) {
             console.log(`[${res.harness}:${scope}] Registered presence hooks -> ${res.targetPath}`);
             if (existsSync(`${res.targetPath}.bak`)) console.log(`  (Backup created: ${res.targetPath}.bak)`);
@@ -765,6 +766,8 @@ async function main() {
           console.log(`  Status: ${diag.status}`);
           const mcp = diagnoseMcp(h, { global: isGlobal }, rootDir);
           if (mcp.installed) console.log(`  MCP shim: installed [${mcp.targetPath}]`);
+          const wk = diagnoseWake(h, { global: isGlobal }, rootDir);
+          if (wk.installed) console.log(`  Idle wake (opt-in): installed [${wk.targetPath}]`);
         }
 
         // Active Broker Diagnostics

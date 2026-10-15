@@ -133,3 +133,33 @@ test("a spent wake budget makes the waiter back off instead of consuming mail", 
     broker.wake.budget = 100;
   }
 });
+
+test("claude wake hook blocks in mesh wait and exits 2 with the enveloped mail on stderr (asyncRewake contract)", async () => {
+  await session("claude", "w-claude-hook", process.pid);
+  const hook = join(import.meta.dirname, "..", "src", "hooks", "mesh-wake-hook.mjs");
+  const child = spawn(process.execPath, [hook], {
+    env: { ...process.env, MESH_IPC_ADDRESS: broker.ipcAddress, MESH_NO_PID_WALK: "1", MESH_SILENT: "1" },
+    stdio: ["pipe", "ignore", "pipe"],
+  });
+  let stderr = "";
+  child.stderr.on("data", (d) => (stderr += d));
+  const exited = new Promise((r) => child.on("exit", (code) => r(code)));
+  child.stdin.end(JSON.stringify({ hook_event_name: "SessionStart", session_id: "w-claude-hook", cwd: dir }));
+  await sleep(800);
+  await send("claude@w-claude-hook", "wake the idle claude");
+  assert.equal(await exited, 2);
+  assert.match(stderr, /wake the idle claude/);
+  assert.match(stderr, /provenance="another-agent-untrusted"/);
+
+  // a duplicate start (next Stop hook) must not become a second listener
+  const dup1 = spawn(process.execPath, [hook], { env: { ...process.env, MESH_IPC_ADDRESS: broker.ipcAddress, MESH_NO_PID_WALK: "1" }, stdio: ["pipe", "ignore", "ignore"] });
+  dup1.stdin.end(JSON.stringify({ session_id: "w-claude-hook" }));
+  await sleep(600);
+  const dup2 = await new Promise((resolve) => {
+    const c = spawn(process.execPath, [hook], { env: { ...process.env, MESH_IPC_ADDRESS: broker.ipcAddress, MESH_NO_PID_WALK: "1" }, stdio: ["pipe", "ignore", "ignore"] });
+    c.on("exit", (code) => resolve(code));
+    c.stdin.end(JSON.stringify({ session_id: "w-claude-hook" }));
+  });
+  assert.equal(dup2, 0, "second listener exits immediately");
+  dup1.kill();
+});

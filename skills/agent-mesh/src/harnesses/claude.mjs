@@ -10,6 +10,7 @@ import {
   hasNestedHooks,
   diagnoseResult,
   jsonMcpSource,
+  wakeHookSource,
   mcpLaunch,
   isCommandAvailable,
   MCP_SERVER_NAME,
@@ -108,6 +109,13 @@ export default {
       },
     },
     mcpSource,
+    // Opt-in (`mesh --init claude --wake`): async re-waking hooks that run `mesh wait` and exit 2 on mail.
+    wakeHookSource({
+      id: ID,
+      resolvePaths: ({ global, root }) => ({
+        targetPath: global ? join(homedir(), ".claude", "settings.json") : join(root, ".claude", "settings.json"),
+      }),
+    }),
   ],
   pid: "walk",
   // Mail reaches a running session at prompt,turn-end; an IDLE TUI cannot be woken (toast only).

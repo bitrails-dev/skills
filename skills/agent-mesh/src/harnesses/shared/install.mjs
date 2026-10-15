@@ -314,3 +314,88 @@ export function tomlMcpSource({ id, resolvePaths, announce = true }) {
     diagnose: (p) => diagnoseResult(id, p.targetPath, hasTomlMcp(p.targetPath)),
   };
 }
+
+// ---- opt-in wake hooks (presence source "wake") ---------------------------------------------------------
+
+const WAKE_HOOK_MARK = "mesh-wake-hook.mjs";
+
+const isWakeHook = (h) => typeof h?.command === "string" && h.command.includes(WAKE_HOOK_MARK);
+
+/**
+ * Adds async re-waking command hooks (Claude `asyncRewake`: exit code 2 wakes the model) that run
+ * `mesh-wake-hook.mjs`. Distinct from the presence hooks: they are only installed on request and removed by
+ * uninstall; `MESH_HOOK_MATCHER` deliberately does not match them.
+ */
+export function installNestedWakeHooks(filePath, scriptAbsPath, { events = ["SessionStart", "Stop"], timeoutSec = 86400 } = {}) {
+  const read = readJsonSafe(filePath);
+  if (!read.ok) return { ok: false, error: read.error, modified: false };
+  const data = read.data;
+  data.hooks ??= {};
+  const entry = {
+    type: "command",
+    command: buildHookCommand(scriptAbsPath),
+    async: true,
+    asyncRewake: true,
+    timeout: timeoutSec,
+    rewakeSummary: "Agent mesh message waiting",
+  };
+  let modified = false;
+  for (const event of events) {
+    data.hooks[event] ??= [];
+    const existing = data.hooks[event].flatMap((g) => (Array.isArray(g.hooks) ? g.hooks : [])).find(isWakeHook);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(entry)) {
+        Object.assign(existing, entry);
+        modified = true;
+      }
+    } else {
+      data.hooks[event].push({ hooks: [{ ...entry }] });
+      modified = true;
+    }
+  }
+  if (modified) {
+    backupOnce(filePath);
+    atomicWriteJson(filePath, data);
+  }
+  return { ok: true, modified };
+}
+
+export function uninstallNestedWakeHooks(filePath) {
+  const read = readJsonSafe(filePath);
+  if (!read.ok) return { ok: false, error: read.error, modified: false };
+  if (!read.exists || !read.data.hooks || typeof read.data.hooks !== "object") return { ok: true, modified: false };
+  let modified = false;
+  for (const [event, groups] of Object.entries(read.data.hooks)) {
+    if (!Array.isArray(groups)) continue;
+    for (const g of groups) {
+      if (!Array.isArray(g.hooks)) continue;
+      const before = g.hooks.length;
+      g.hooks = g.hooks.filter((h) => !isWakeHook(h));
+      if (g.hooks.length !== before) modified = true;
+    }
+    read.data.hooks[event] = groups.filter((g) => !Array.isArray(g.hooks) || g.hooks.length > 0);
+    if (read.data.hooks[event].length === 0) delete read.data.hooks[event];
+  }
+  if (modified) atomicWriteJson(filePath, read.data);
+  return { ok: true, modified };
+}
+
+export function hasNestedWakeHooks(filePath) {
+  const read = readJsonSafe(filePath);
+  return Boolean(
+    read.ok && Object.values(read.data.hooks || {}).some((gs) => Array.isArray(gs) && gs.some((g) => (g.hooks || []).some(isWakeHook)))
+  );
+}
+
+/** Opt-in `wake` presence source for harnesses whose hooks can run an async re-waking command. */
+export function wakeHookSource({ id, resolvePaths, events, timeoutSec }) {
+  return {
+    kind: "wake",
+    optIn: true,
+    script: WAKE_HOOK_MARK,
+    resolvePaths,
+    install: (p, script) => installNestedWakeHooks(p.targetPath, script, { events, timeoutSec }),
+    uninstall: (p) => uninstallNestedWakeHooks(p.targetPath),
+    diagnose: (p) => diagnoseResult(id, p.targetPath, hasNestedWakeHooks(p.targetPath)),
+  };
+}
