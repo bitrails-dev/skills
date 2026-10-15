@@ -1,5 +1,6 @@
 import { join, dirname, basename } from "node:path";
 import { execFileSync } from "node:child_process";
+import { guardWrite } from "./shared/home-guard.mjs";
 import { homedir } from "node:os";
 import { existsSync, writeFileSync } from "node:fs";
 import { tailText } from "./shared/transcript.mjs";
@@ -26,6 +27,7 @@ const ID = "claude";
  */
 const useClaudeCli = (p) => basename(p.targetPath) === ".claude.json" && isCommandAvailable("claude");
 const runClaudeCli = (p, args) => {
+  guardWrite(p.targetPath);
   const home = dirname(p.targetPath);
   execFileSync("claude", ["mcp", ...args], {
     env: { ...process.env, HOME: home, USERPROFILE: home },

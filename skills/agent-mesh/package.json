@@ -8,7 +8,7 @@
     "agent-mesh": "./scripts/agent-mesh.mjs"
   },
   "scripts": {
-    "test": "node --test --test-concurrency=3 tests/phase1-test.mjs tests/phase2-test.mjs tests/swarm-test.mjs tests/resilience-test.mjs tests/mesh-routing-test.mjs tests/presence-test.mjs tests/version-migration-test.mjs tests/hooks-install-test.mjs tests/agy-adapter-test.mjs tests/ipc-watch-notify-test.mjs tests/session-name-test.mjs tests/harness-names-test.mjs tests/tui-scan-test.mjs tests/harness-contract-test.mjs tests/mcp-shim-test.mjs tests/mail-delivery-test.mjs tests/wake-safety-test.mjs tests/mesh-wait-test.mjs tests/wake-descriptor-test.mjs tests/codex-wake-test.mjs tests/opt-in-cli-test.mjs tests/setup-test.mjs tests/identity-test.mjs"
+    "test": "node --test --test-concurrency=3 tests/phase1-test.mjs tests/phase2-test.mjs tests/swarm-test.mjs tests/resilience-test.mjs tests/mesh-routing-test.mjs tests/presence-test.mjs tests/version-migration-test.mjs tests/hooks-install-test.mjs tests/agy-adapter-test.mjs tests/ipc-watch-notify-test.mjs tests/session-name-test.mjs tests/harness-names-test.mjs tests/tui-scan-test.mjs tests/harness-contract-test.mjs tests/mcp-shim-test.mjs tests/mail-delivery-test.mjs tests/wake-safety-test.mjs tests/mesh-wait-test.mjs tests/wake-descriptor-test.mjs tests/codex-wake-test.mjs tests/opt-in-cli-test.mjs tests/setup-test.mjs tests/identity-test.mjs tests/home-guard-test.mjs"
   },
   "keywords": [
     "agent-mesh",

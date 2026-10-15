@@ -18,6 +18,7 @@ import { pathToFileURL } from "node:url";
 import { readSqliteRow, execSqlite } from "./shared/sqlite.mjs";
 import { DEFAULT_TTL_MS, classifyCmdline, getMeshHome, firstPositional as sharedFirstPositional } from "./shared/process.mjs";
 import { diagnoseResult, MCP_SERVER_NAME } from "./shared/install.mjs";
+import { guardWrite } from "./shared/home-guard.mjs";
 
 const ID = "muse";
 const HOOK_PLUGIN = "agent-mesh";
@@ -67,6 +68,7 @@ const bundleDir = (name) => join(getMeshHome(), ".agent-mesh", "muse-plugin", na
 
 function writeBundle(name, manifest, files) {
   const dir = bundleDir(name);
+  guardWrite(dir);
   mkdirSync(join(dir, ".muse-plugin"), { recursive: true });
   writeFileSync(join(dir, ".muse-plugin", "plugin.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8");
   for (const [rel, content] of Object.entries(files)) {
