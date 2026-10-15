@@ -542,6 +542,40 @@ async function main() {
       process.exit(result.code);
     }
 
+    case "probe-wake": {
+      // mesh probe-wake <harness> [--after 20] [--stream]: guided evidence run for a harness's wake tier
+      const registry = await import("../src/harnesses/index.mjs");
+      const probe = await import("../src/wait/wake-probe.mjs");
+      const { createInterface } = await import("node:readline/promises");
+      const { fileURLToPath } = await import("node:url");
+      const desc = registry.get(args.find((a) => !a.startsWith("--")));
+      if (!desc) {
+        console.error(`Usage: mesh probe-wake <${registry.ids().join("|")}> [--after 20] [--stream]`);
+        process.exit(1);
+      }
+      const afterIdx = args.indexOf("--after");
+      const afterSec = afterIdx !== -1 ? Number(args[afterIdx + 1]) || 20 : 20;
+      const stream = args.includes("--stream");
+      const nonce = probe.newNonce();
+      const emitScript = fileURLToPath(new URL("../src/wait/probe-emit.mjs", import.meta.url)).split("\\").join("/");
+      const emitCommand = `node ${emitScript} --nonce ${nonce} --after ${afterSec}${stream ? " --repeat" : ""}`;
+      console.log(probe.buildProbePlan(desc, { nonce, afterSec, stream, emitCommand }));
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const answers = {};
+      for (const q of probe.PROBE_QUESTIONS) {
+        const raw = await rl.question(`\n${q.text} ${q.numeric ? "" : "[y/n/blank=unknown] "}`);
+        answers[q.key] = q.numeric ? (raw.trim() === "" ? null : Number(raw)) : probe.parseYesNo(raw);
+      }
+      rl.close();
+      const version = process.env.MESH_PROBE_VERSION || "unknown version (set MESH_PROBE_VERSION)";
+      const date = new Date().toISOString().slice(0, 10);
+      const launcher = desc.delivery.wake.candidate?.launcher || desc.delivery.wake.launcher;
+      const result = probe.evaluateProbe(answers, { launcher, version, date, stream });
+      console.log("\n--- descriptor snippet (delivery.wake) ---\n" + probe.formatDescriptorSnippet(result));
+      console.log("\n--- evidence row for docs/ADAPTERS.md (Wake tiers) ---\n" + probe.formatEvidenceRow(desc.id, result, { version, date }));
+      process.exit(0);
+    }
+
     case "mute":
     case "unmute": {
       try {
@@ -780,6 +814,7 @@ Commands:
   status                             Display current agent sessions, busy status, and queue depth
   wait --session <id> [--stream]     Block until wake-eligible mail arrives for a session (see docs/ADAPTERS.md)
   mute | unmute                      Disable/enable waking idle sessions (mail then waits for the next prompt)
+  probe-wake <harness>               Guided run that records whether a harness wakes an idle session (evidence row)
   hooks install [harnesses...]       Install lifecycle hooks for specified (or detected) harnesses
   hooks uninstall [harnesses...]     Remove agent-mesh hooks cleanly
   hooks doctor, doctor               Inspect configuration, verify broker, and view recent hook logs

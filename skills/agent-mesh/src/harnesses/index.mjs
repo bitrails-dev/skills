@@ -13,6 +13,18 @@ import pi from "./pi.mjs";
 import { DEFAULT_TTL_MS } from "./shared/process.mjs";
 
 /**
+ * @typedef {"pull"|"push"|"stream"|"oneshot"} WakeTier
+ *   pull    = mail waits for the next prompt/turn end; a toast is the floor
+ *   push    = the harness-side component injects mail itself (plugin/extension/broker injector)
+ *   stream  = a long-lived watcher whose every output line wakes the model
+ *   oneshot = a background command whose exit wakes the model; must be re-armed
+ * @typedef {{ version: string, date: string, verified: boolean, basis: string }} WakeEvidence
+ *   verified=false: derived from schemas/types/fakes, never observed waking a live session (`mesh probe-wake`)
+ * @typedef {{ tier: WakeTier, launcher: "plugin"|"hook"|"model"|"broker"|"extension", survivesTurnEnd: boolean,
+ *   needsPermission: boolean, evidence?: WakeEvidence }} WakeSpec
+ *   Active spec. A tier above `pull` REQUIRES evidence. `candidate` (also with evidence) is an opt-in tier that
+ *   `mesh --init <harness> --wake` enables; it never becomes active without a probe run.
+ *
  * @typedef {"direct"|"walk"|"none"|"provided"} PidStrategy
  *   direct   = the sender runs inside the harness (plugin/extension): its own pid is the harness
  *   walk     = hook: climb past shell wrappers to the long-lived harness process
@@ -24,7 +36,7 @@ import { DEFAULT_TTL_MS } from "./shared/process.mjs";
  * @typedef {{ harness: string, targetPath: string, status: string, installed: boolean }} DiagnoseResult
  *
  * @typedef {object} PresenceSource
- * @property {"hook"|"plugin"|"extension"|"process"|"mcp"} kind
+ * @property {"hook"|"plugin"|"extension"|"process"|"mcp"|"wake"} kind
  * @property {boolean} [optIn]  only installed on request (`installHarness(..., {mcp: true})`); always removed on uninstall
  * @property {boolean} [announce]  mcp only: false when the shim must not announce presence (shared-daemon host)
  * @property {string} [script]  entry script path relative to src/hooks/ (hook/plugin/extension/mcp)
@@ -41,7 +53,7 @@ import { DEFAULT_TTL_MS } from "./shared/process.mjs";
  *   binaries: PATH lookups; markers: dirs whose existence means "installed"; skillDir: harness-local skill
  *   copy that counts as "mesh available"; projectDir: per-project dir used by the last-resort fallback
  * @property {PresenceSource[]} presence
- * @property {{ via: "hook"|"plugin"|"extension", inject: ("prompt"|"invocation"|"turn-end"|"poll")[], idle: "inject"|"toast-only" }} delivery
+ * @property {{ via: "hook"|"plugin"|"extension", inject: ("prompt"|"invocation"|"turn-end"|"poll")[], idle: "inject"|"toast-only", wake: WakeSpec }} delivery
  *   how queued mail reaches a running session. idle "inject": the harness-side component can wake an idle
  *   session (polls + injects); "toast-only": nothing can wake an idle TUI, the broker raises a desktop toast.
  * @property {PidStrategy} pid
@@ -79,12 +91,22 @@ export function validateDescriptor(h) {
   if (!["direct", "walk", "none", "provided"].includes(h.pid)) fail(`bad pid strategy ${h.pid}`);
   if (!Array.isArray(h.presence) || h.presence.length === 0) fail("needs at least one presence source");
   for (const s of h.presence) {
-    if (!["hook", "plugin", "extension", "process", "mcp"].includes(s.kind)) fail(`bad presence kind ${s.kind}`);
-    if (["hook", "plugin", "extension", "mcp"].includes(s.kind)) {
+    if (!["hook", "plugin", "extension", "process", "mcp", "wake"].includes(s.kind)) fail(`bad presence kind ${s.kind}`);
+    if (["hook", "plugin", "extension", "mcp", "wake"].includes(s.kind)) {
       for (const f of ["script", "resolvePaths", "install", "uninstall", "diagnose"]) if (!s[f]) fail(`${s.kind} source needs ${f}`);
     }
   }
   if (!h.delivery || !["hook", "plugin", "extension"].includes(h.delivery.via) || !Array.isArray(h.delivery.inject) || !["inject", "toast-only"].includes(h.delivery.idle)) fail("delivery {via, inject[], idle} required");
+  const wake = h.delivery.wake;
+  const TIERS = ["pull", "push", "stream", "oneshot"];
+  if (!wake || !TIERS.includes(wake.tier)) fail("delivery.wake.tier must be one of " + TIERS.join("|"));
+  if (wake.tier !== "pull" && !(wake.evidence?.version && wake.evidence?.date && typeof wake.evidence?.basis === "string")) {
+    fail("a wake tier above pull requires evidence {version, date, verified, basis}");
+  }
+  if (wake.candidate && (!TIERS.includes(wake.candidate.tier) || wake.candidate.tier === "pull" || !wake.candidate.evidence?.version || !wake.candidate.launcher)) {
+    fail("delivery.wake.candidate needs a tier above pull, a launcher and evidence");
+  }
+  if ((h.delivery.idle === "inject") !== (wake.tier !== "pull")) fail('delivery.idle "inject" must match a wake tier above pull');
   if (!h.end || !Array.isArray(h.end.signals) || h.end.signals.length === 0) fail("end.signals required");
   if (h.pid === "none" && !h.end.signals.includes("ttl")) fail('pid "none" requires a "ttl" end signal');
   if (h.end.signals.includes("ttl") && h.end.ttlMs && !(h.end.ttlMs.idle > 0 && h.end.ttlMs.busy > 0)) fail("bad end.ttlMs");

@@ -103,7 +103,18 @@ export default {
   ],
   pid: "direct", // the plugin runs inside the harness: process.pid is the harness
   // The in-process plugin polls the broker and injects with client.session.promptAsync (wakes an idle session).
-  delivery: { via: "plugin", inject: ["poll", "turn-end"], idle: "inject" },
+  delivery: {
+    via: "plugin",
+    inject: ["poll", "turn-end"],
+    idle: "inject",
+    wake: {
+      tier: "push",
+      launcher: "plugin",
+      survivesTurnEnd: true,
+      needsPermission: false,
+      evidence: { version: "opencode 1.19.0 (@opencode-ai/sdk)", date: "2026-10-15", verified: false, basis: "SDK types session.promptAsync + fake-client tests; not observed in a live TUI" },
+    },
+  },
   name: { watch: { kind: "event" } }, // session.updated -> rename event
   end: { signals: ["event", "pid"] }, // session.deleted / server.instance.disposed
   fixtures: {},

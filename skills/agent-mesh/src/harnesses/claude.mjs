@@ -111,7 +111,27 @@ export default {
   ],
   pid: "walk",
   // Mail reaches a running session at prompt,turn-end; an IDLE TUI cannot be woken (toast only).
-  delivery: { via: "hook", inject: ["prompt", "turn-end"], idle: "toast-only" },
+  delivery: {
+    via: "hook",
+    inject: ["prompt", "turn-end"],
+    idle: "toast-only",
+    // Active tier is pull. Candidate (opt-in, `mesh --init claude --wake`): an asyncRewake hook running
+    // `mesh wait`, which wakes the model when it exits with code 2. Found in the 2.1.300 hook schema; not yet
+    // observed waking an idle session (run `mesh probe-wake claude`).
+    wake: {
+      tier: "pull",
+      launcher: "hook",
+      survivesTurnEnd: false,
+      needsPermission: false,
+      candidate: {
+        tier: "oneshot",
+        launcher: "hook",
+        survivesTurnEnd: false,
+        needsPermission: false,
+        evidence: { version: "claude 2.1.300", date: "2026-10-15", verified: false, basis: "hook schema: asyncRewake (exit code 2 wakes the model)" },
+      },
+    },
+  },
   name: { resolve: resolveName, watch: { kind: "transcript-mtime" } },
   end: { signals: ["event", "pid"] },
   fixtures: {

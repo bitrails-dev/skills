@@ -134,7 +134,26 @@ export default {
   // shared-host (no pid), and the scanner supplies the TUI pid instead.
   pid: "walk",
   // Mail reaches a running session at prompt,turn-end; an IDLE TUI cannot be woken (toast only).
-  delivery: { via: "hook", inject: ["prompt", "turn-end"], idle: "toast-only" },
+  delivery: {
+    via: "hook",
+    inject: ["prompt", "turn-end"],
+    idle: "toast-only",
+    // Candidate (opt-in, `mesh --init codex --wake`): the broker injects `turn/start` into an IDLE thread through
+    // the app-server control socket (see harnesses/codex-wake.mjs).
+    wake: {
+      tier: "pull",
+      launcher: "broker",
+      survivesTurnEnd: true,
+      needsPermission: false,
+      candidate: {
+        tier: "push",
+        launcher: "broker",
+        survivesTurnEnd: true,
+        needsPermission: false,
+        evidence: { version: "codex 0.162.1", date: "2026-10-15", verified: false, basis: "app-server protocol schema + isolated throwaway daemon" },
+      },
+    },
+  },
   classifyProcess,
   name: { resolve: resolveName, watch: { kind: "sqlite-poll" } },
   pollSession,

@@ -46,7 +46,18 @@ export default {
   ],
   pid: "direct", // the extension runs inside the harness: process.pid is the harness
   // The extension polls the broker and injects with pi.sendUserMessage (always triggers a turn).
-  delivery: { via: "extension", inject: ["poll", "turn-end"], idle: "inject" },
+  delivery: {
+    via: "extension",
+    inject: ["poll", "turn-end"],
+    idle: "inject",
+    wake: {
+      tier: "push",
+      launcher: "extension",
+      survivesTurnEnd: true,
+      needsPermission: false,
+      evidence: { version: "pi 1.1.0 (pi-coding-agent types)", date: "2026-10-15", verified: false, basis: "ExtensionAPI.sendUserMessage always triggers a turn + fake-API tests; not observed in a live TUI" },
+    },
+  },
   name: { watch: { kind: "event" } }, // session_info_changed -> rename event
   end: { signals: ["event", "pid"] }, // session_shutdown (reason "quit")
   fixtures: {},

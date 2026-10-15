@@ -171,7 +171,12 @@ test("a fake harness registers in a few lines and passes the same contract", asy
       diagnose: (p) => ({ harness: "fakeharness", targetPath: p.targetPath, status: "", installed: readFileSync(p.targetPath, "utf8") === "x" }),
     }],
     pid: "direct",
-    delivery: { via: "plugin", inject: ["poll"], idle: "inject" },
+    delivery: {
+      via: "plugin",
+      inject: ["poll"],
+      idle: "inject",
+      wake: { tier: "push", launcher: "plugin", survivesTurnEnd: true, needsPermission: false, evidence: { version: "fake 1", date: "2026-10-15", verified: true, basis: "test" } },
+    },
     name: { resolve: ({ sessionId }) => names.get(sessionId) ?? null },
     end: { signals: ["event", "pid"] },
     fixtures: { name: { setup: () => ({ ctx: { sessionId: "fake-fixture" }, expected: "fake name" }) } },

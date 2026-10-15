@@ -88,7 +88,14 @@ export default {
   ],
   pid: "walk",
   // Mail reaches a running session at invocation,turn-end; an IDLE TUI cannot be woken (toast only).
-  delivery: { via: "hook", inject: ["invocation", "turn-end"], idle: "toast-only" },
+  delivery: {
+    via: "hook",
+    inject: ["invocation", "turn-end"],
+    idle: "toast-only",
+    // agy hooks only run inside a turn (PreInvocation/Stop); no push channel or background-command wake was found
+    // (hook contract in the binary: command hooks are synchronous and block the loop). Stays at pull + toast.
+    wake: { tier: "pull", launcher: "hook", survivesTurnEnd: false, needsPermission: false },
+  },
   name: { resolve: resolveName, watch: { kind: "sqlite-poll" } },
   // agy has no SessionEnd hook: the exit is noticed by the pid watcher (or the TTL when no pid resolved).
   end: { signals: ["pid", "ttl"], ttlMs: DEFAULT_TTL_MS },
