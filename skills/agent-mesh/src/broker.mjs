@@ -244,7 +244,7 @@ export class AgentMeshBroker {
           body,
         };
 
-        const res = this.repo.enqueueMessage(replyMsg);
+        this.repo.enqueueMessage(replyMsg);
         this.scheduleDispatch();
         return { ok: true, ticket: replyMsg.id, parentId: ticket };
       }

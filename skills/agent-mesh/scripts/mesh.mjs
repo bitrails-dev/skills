@@ -6,12 +6,12 @@
  * sending asynchronous messages, and watching live agent event streams.
  */
 
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { homedir } from "node:os";
-import { getIpcAddress, sendIpcRequest, findRepoRoot, resolveIpcAddress } from "../src/ipc.mjs";
+import { sendIpcRequest, findRepoRoot, resolveIpcAddress } from "../src/ipc.mjs";
 import { spawnChild } from "../src/drivers/base.mjs";
-import { ensureBroker, stopBroker, isProcessAlive, getBrokerInfo } from "../src/daemon.mjs";
+import { ensureBroker, stopBroker, getBrokerInfo } from "../src/daemon.mjs";
 import {
   installHarness,
   uninstallHarness,
@@ -19,10 +19,6 @@ import {
   autoDiscoverHarnesses,
   normalizeHarnessName,
   SUPPORTED_HARNESSES,
-  installClaudeHooks,
-  uninstallClaudeHooks,
-  installAgyHooks,
-  uninstallAgyHooks,
 } from "../src/hooks/installer.mjs";
 
 /**

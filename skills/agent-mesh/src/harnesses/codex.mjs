@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { readSqliteRow, execSqlite } from "./shared/sqlite.mjs";
 import { tailText } from "./shared/transcript.mjs";
 import { DEFAULT_TTL_MS, looksInteractive } from "./shared/process.mjs";

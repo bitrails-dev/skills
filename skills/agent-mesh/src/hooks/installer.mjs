@@ -95,7 +95,7 @@ export function resolveHarnessPaths(harness, options = {}, rootDir = process.cwd
  * @param {string} [rootDir=process.cwd()]
  * @returns {string[]} List of detected canonical harness ids
  */
-export function autoDiscoverHarnesses(options = {}, rootDir = process.cwd()) {
+export function autoDiscoverHarnesses(_options = {}, rootDir = process.cwd()) {
   const universalSkill = existsSync(join(homedir(), ".agents", "skills", "agent-mesh", "SKILL.md"));
   const repoSkill = existsSync(join(rootDir, "SKILL.md")) || existsSync(join(rootDir, "skills", "agent-mesh", "SKILL.md"));
   const skillAvailable = universalSkill || repoSkill;
