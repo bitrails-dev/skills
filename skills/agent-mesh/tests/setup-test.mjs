@@ -103,3 +103,28 @@ test("bad input: unknown harness and unknown action exit 2", () => {
   assert.equal(run(["--yes", "--harness", "nope", "--no-broker"]).status, 2);
   assert.equal(run(["--yes", "--action", "explode", "--no-broker"]).status, 2);
 });
+
+test("update never adds opt-ins: hooks-only stays hooks-only, existing MCP is preserved", () => {
+  const fresh = mkdtempSync(join(tmpdir(), "mesh-setup-proj3-"));
+  const inFresh = (args) =>
+    spawnSync(process.execPath, [CLI, "setup", ...args], {
+      cwd: fresh,
+      encoding: "utf8",
+      env: { ...process.env, MESH_HOME: home, MESH_SILENT: "1", MESH_MUSE_BIN: join(home, "no-such-muse.exe") },
+    });
+  assert.equal(inFresh(["--yes", "--project", "--harness", "claude,pi", "--action", "install", "--no-broker"]).status, 0);
+
+  const hooksOnly = inFresh(["--yes", "--project", "--all", "--action", "update", "--no-broker"]);
+  assert.equal(hooksOnly.status, 0, hooksOnly.stdout);
+  assert.match(hooksOnly.stdout, /- claude: hooks\s+\(now: hooks:yes mcp:no wake:no\)/);
+  assert.equal(existsSync(join(fresh, ".mcp.json")), false, "update must not add MCP");
+  assert.equal(existsSync(join(fresh, ".pi", "mcp.json")), false);
+  assert.ok(!JSON.stringify(JSON.parse(readFileSync(join(fresh, ".claude", "settings.json"), "utf8"))).includes("mesh-wake-hook"), "update must not add wake");
+
+  assert.equal(inFresh(["--yes", "--project", "--harness", "claude", "--action", "install", "--mcp", "--no-broker"]).status, 0);
+  const kept = inFresh(["--yes", "--project", "--all", "--action", "update", "--no-broker"]);
+  assert.match(kept.stdout, /- claude: hooks \+ mcp\s+\(now: hooks:yes mcp:yes wake:no\)/);
+  assert.match(kept.stdout, /- pi: hooks\s+\(now: hooks:yes mcp:no/);
+  assert.ok(JSON.parse(readFileSync(join(fresh, ".mcp.json"), "utf8")).mcpServers["agent-mesh"], "existing MCP preserved");
+  assert.equal(existsSync(join(fresh, ".pi", "mcp.json")), false, "still no MCP for pi");
+});
