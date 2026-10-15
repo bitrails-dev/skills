@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { existsSync } from "node:fs";
 import { readSqliteRow, execSqlite } from "./shared/sqlite.mjs";
 import { tailText } from "./shared/transcript.mjs";
-import { DEFAULT_TTL_MS, classifyCmdline, getMeshHome } from "./shared/process.mjs";
+import { DEFAULT_TTL_MS, classifyCmdline, getMeshHome, firstPositional as sharedFirstPositional } from "./shared/process.mjs";
 import { createCodexInjector } from "./codex-wake.mjs";
 import { readWakeConfig, writeWakeConfig, wakeConfigPath } from "../presence/wake-policy.mjs";
 import {
@@ -67,20 +67,7 @@ const NON_SESSION_SUBCOMMANDS = new Set([
 // Non-interactive runs whose hooks still fire in-process: not a user terminal (like claude -p).
 const HEADLESS_RUN_SUBCOMMANDS = new Set(["exec", "e", "review"]);
 
-/**
- * First positional token of a codex command line (subcommand or prompt), or null. null also for
- * --help/--version, which exit immediately. Windows paths and quoted tokens are handled.
- */
-function firstPositional(cmdline) {
-  const toks = String(cmdline || "").match(/"[^"]*"|\S+/g)?.map((t) => t.replace(/^"|"$/g, "")) ?? [];
-  for (let i = 1; i < toks.length; i++) {
-    const t = toks[i];
-    if (["-h", "--help", "-V", "--version"].includes(t)) return { exits: true };
-    if (!t.startsWith("-")) return { token: t.toLowerCase() };
-    if (VALUE_FLAGS.has(t)) i++;
-  }
-  return {};
-}
+const firstPositional = (cmdline) => sharedFirstPositional(cmdline, { valueFlags: VALUE_FLAGS });
 
 /** Interactive TUI = a codex.exe with no non-session subcommand (bare, resume, fork, agents, or a prompt). */
 function isInteractiveTui(cmdline) {
@@ -106,6 +93,7 @@ export default {
     skillDir: () => join(homedir(), ".codex", "skills", "agent-mesh"),
     projectDir: ".codex",
   },
+  agents: { skills: "both", config: false, evidence: "binary", note: "capability discovery lists .agents/skills" },
   presence: [
     {
       kind: "hook",

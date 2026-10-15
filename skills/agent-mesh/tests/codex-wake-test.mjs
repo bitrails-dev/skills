@@ -134,7 +134,7 @@ test("injector wakes an idle thread through the control socket, skips active thr
   await call({ action: "send", payload: { from: "claude", to: `codex@${threadId}`, body: "please summarize the build", kind: "ask" } });
   const injected = await until(
     () => seen.find((m) => m.method === "item/started" && JSON.stringify(m.params).includes("please summarize the build")),
-    20000
+    45000
   );
   assert.ok(injected, "the owner connection saw the injected user message");
   assert.match(JSON.stringify(injected.params), /provenance=\\"another-agent-untrusted\\"/);

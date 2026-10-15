@@ -105,6 +105,7 @@ pid exit; TUI classification from `fixtures.tui`; hook command-line classificati
 | antigravity | `~/.gemini/config/mcp_config.json` / `<root>/.agents/mcp_config.json` (project path unverified) | `{command, args, disabled:false}` |
 | opencode | `opencode.json`, key `mcp` | `{type:"local", command:[node, script, --harness, opencode], enabled:true}` |
 | pi | `~/.pi/agent/mcp.json` / `<root>/.pi/mcp.json` | `{command, args}` |
+| muse | plugin bundle `agent-mesh-mcp` (capability `mcpServers`, stdio) installed via `muse plugins install` + `approve`; also `mcpServers` in `~/.config/muse/settings.json` for HTTP servers | not observed (needs a live session) | unverified | unverified | unverified | unverified | validated and installed with `muse plugins` in an isolated HOME |
 
   The Stop-hook / plugin inbox injection stays installed and is the fallback where MCP is absent.
 
@@ -243,6 +244,7 @@ never observed waking a live session).
 | codex | pull | - | - | **push** via broker injector: observer connection sends `turn/start` to an IDLE thread (`mesh --init codex --wake`). Verified against a throwaway app-server 0.162.1 daemon in `tests/codex-wake-test.mjs` (idle thread injected, active thread skipped, version pin, reconnect); not run against the live TUI |
 | claude | pull | Stop-hook block + UserPromptSubmit additionalContext | - | **oneshot** via `asyncRewake` hook running `mesh wait` (`mesh --init claude --wake`): present in the 2.1.300 hook schema ("runs in background and wakes the model on exit code 2"), hook behavior covered by `tests/mesh-wait-test.mjs`; idle wake NOT yet observed (verified: false). Also present in 2.1.300: Channels (MCP `notifications/claude/channel`), but they need a session started with `--channels` (and an allowlist / org policy), so it cannot reach already-running sessions and is not shipped |
 | antigravity | pull | PreInvocation injectSteps + Stop continue | agy hook contract (embedded docs): hooks are synchronous command hooks that only run inside a turn; no background wake found | none known |
+| muse | pull | UserPromptSubmit additionalContext (verified with `muse plugins hook test`) + Stop hook | `muse session-message` is unsupported on Windows; no background wake found | none known |
 
 Nothing is promoted to the active tier without a probe run: use `mesh probe-wake <harness>` (guided: arms a
 nonce emitter, asks what the harness did, prints the descriptor snippet and the evidence row to paste above).
@@ -283,6 +285,41 @@ nonce emitter, asks what the harness did, prints the descriptor snippet and the 
 - An `asyncRewake` hook is subject to Claude's own loop protection ("exited 2 again" is not re-woken).
 - Wake delivery cannot tell which of several untargeted-eligible sessions the human is looking at; it uses the
   most recently active one.
+
+## 11. Muse Code (`muse`)
+
+Identified on this machine: **Muse Code 1.4.8**, Meta's interactive terminal coding agent
+(`C:Users<user>AppDataLocalProgramsmusemuse.cmd` -> PowerShell launcher -> `muse-bin-<ver>.exe`).
+Found read-only via PATH, `--help` of the real binary under an isolated HOME, and strings of the binary.
+
+| Aspect | Finding |
+|---|---|
+| Config / state | `~/.config/muse` (settings.json, auth.json, trust.json); data `~/.local/share/muse` (plugins, skills, sessions, `session-index.db`) |
+| Hooks / MCP | **Plugin bundles** (`.muse-plugin/plugin.json`, capabilities skills/commands/hooks/mcpServers/reminders) installed with `muse plugins install <dir> --scope user|project` and trusted with `muse plugins approve`. No hand-edited hook file. Hook events are Claude-compatible (SessionStart, UserPromptSubmit, Stop, SessionEnd, PreToolUse, ...); `hookSpecificOutput.additionalContext` is honored (observed with `muse plugins hook test`); each hook needs its own source file |
+| Mesh install | descriptor generates `<meshHome>/.agent-mesh/muse-plugin/agent-mesh` (4 wrapper hooks that run the shared presence hook with `--harness muse`) and `.../agent-mesh-mcp` (opt-in stdio MCP server), then shells out to the real `muse` CLI; diagnose reads `muse plugins list --json` |
+| Session names | `session-index.db` table `sessions` (`session_name`, then `title`); polled like Codex/agy |
+| Process | `muse-bin-<version>.exe`; the launcher's cmd/powershell parents live as long as the TUI. `muse exec` is headless (classified background); `resume` and a bare prompt are the TUI |
+| Wake | pull + toast. `muse session-message` (native cross-session messaging) answers "unsupported on this platform" on Windows |
+| `.agents` | project `.agents/skills`, workflows, plans are native; `~/.agents/skills` is an import-only source |
+
+Unverified: the live hook stdin payload (field names for session id; fixture-based test only, `muse exec`
+with the echo provider does not fire plugin hooks), whether the Stop hook's `decision: block` continues the
+turn, the project-scope plugin location, and the native `session-message` path on non-Windows.
+
+## 12. `.agents` convention per harness
+
+One shared helper (`src/harnesses/shared/agents-dir.mjs`: `agentsDir`, `agentsPath`, `skillDir`,
+`skillInstalled`) resolves `~/.agents` (override `MESH_AGENTS_HOME`) and `<project>/.agents`; each descriptor
+declares `agents: {skills, config, evidence}`. `mesh doctor`/discovery use the helper; nothing is moved.
+
+| Harness | `.agents/skills` | Mesh config under `.agents` | Evidence |
+|---|---|---|---|
+| claude | no (own `~/.claude/skills`; `~/.agents/skills` only an import source) | no | binary strings |
+| codex | yes (capability discovery lists `.agents/skills`) | no | binary strings |
+| antigravity | project (`{workspace}/.agents/skills`) | yes: project `.agents/hooks.json`, `.agents/mcp_config.json` | binary strings |
+| opencode | not found in the 1.19.0 binary | no | unverified |
+| pi | yes, global and project | no | pi docs (skills.md) |
+| muse | project only; `~/.agents/skills` import-only | no (plugin bundles via CLI) | binary strings |
 
 ## 8. Open decisions and risks
 

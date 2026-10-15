@@ -92,6 +92,7 @@ export default {
     skillDir: () => join(homedir(), ".claude", "skills", "agent-mesh"),
     projectDir: ".claude",
   },
+  agents: { skills: "user-import", config: false, evidence: "binary", note: "own ~/.claude/skills (a link to ~/.agents/skills here); ~/.agents/skills is only an import source" },
   presence: [
     {
       kind: "hook",

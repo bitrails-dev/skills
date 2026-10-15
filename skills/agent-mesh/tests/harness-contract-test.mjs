@@ -32,6 +32,22 @@ const send = (payload) =>
   sendIpcRequest(broker.ipcAddress, { action: "session_event", payload: { cwd: dir, origin: "interactive", ...payload } });
 const live = async () => (await sendIpcRequest(broker.ipcAddress, { action: "status" })).liveSessions;
 
+/**
+ * Harnesses whose install flow shells out to a real CLI declare `fixtures.sandbox`: the subtest then runs with
+ * HOME pointed at a temp dir (and is skipped when the CLI is not installed).
+ */
+const sandboxed = (h, fn) => () => {
+  const box = h.fixtures?.sandbox;
+  if (!box) return fn();
+  if (!box.available()) return undefined;
+  const restore = box.enter(mkdtempSync(join(tmpdir(), `mesh-contract-home-${h.id}-`)));
+  try {
+    return fn();
+  } finally {
+    restore();
+  }
+};
+
 /** Runs every contract assertion against one descriptor. */
 async function runContract(t, h) {
   await t.test("shape", () => {
@@ -39,7 +55,7 @@ async function runContract(t, h) {
     for (const n of [h.id, ...h.aliases]) assert.equal(registry.get(n), h, `${n} resolves to ${h.id}`);
   });
 
-  await t.test("install -> diagnose -> idempotent reinstall -> uninstall (foreign config survives)", () => {
+  await t.test("install -> diagnose -> idempotent reinstall -> uninstall (foreign config survives)", sandboxed(h, () => {
     const root = mkdtempSync(join(tmpdir(), `mesh-contract-${h.id}-`));
     const opts = { global: false };
     const first = installHarness(h.id, opts, root);
@@ -58,9 +74,9 @@ async function runContract(t, h) {
     if (first.targetPath.endsWith(".json") && existsSync(first.targetPath)) {
       assert.deepEqual(JSON.parse(readFileSync(first.targetPath, "utf8")).foreignKey, { keep: true });
     }
-  });
+  }));
 
-  await t.test("mcp entry is opt-in, round-trips, keeps foreign config, and is always removed on uninstall", () => {
+  await t.test("mcp entry is opt-in, round-trips, keeps foreign config, and is always removed on uninstall", sandboxed(h, () => {
     if (!h.presence.some((s) => s.kind === "mcp")) return;
     const root = mkdtempSync(join(tmpdir(), `mesh-contract-mcp-${h.id}-`));
     const opts = { global: false };
@@ -70,6 +86,14 @@ async function runContract(t, h) {
     assert.equal(plain.ok, true, plain.error);
     assert.equal(diagnoseMcp(h.id, opts, root).installed, false, "default install must not add the MCP entry");
 
+    if (h.fixtures?.sandbox) {
+      // CLI-managed config (no file to pre-seed): round trip through the CLI only
+      assert.equal(installHarness(h.id, { ...opts, mcp: true }, root).ok, true);
+      assert.equal(diagnoseMcp(h.id, opts, root).installed, true);
+      assert.equal(uninstallHarness(h.id, opts, root).ok, true);
+      assert.equal(diagnoseMcp(h.id, opts, root).installed, false);
+      return;
+    }
     const mcp = diagnoseMcp(h.id, opts, root);
     mkdirSync(dirname(mcp.targetPath), { recursive: true });
     const foreign = mcp.targetPath.endsWith(".toml") ? '[other]\nkey = "keep"\n' : JSON.stringify({ foreignKey: { keep: true } });
@@ -87,9 +111,9 @@ async function runContract(t, h) {
     assert.equal(uninstallHarness(h.id, opts, root).ok, true);
     assert.equal(diagnoseMcp(h.id, opts, root).installed, false);
     assert.ok(readFileSync(mcp.targetPath, "utf8").includes("keep"), "foreign config survives uninstall");
-  });
+  }));
 
-  await t.test("wake source is opt-in, round-trips, keeps foreign config, and is always removed on uninstall", () => {
+  await t.test("wake source is opt-in, round-trips, keeps foreign config, and is always removed on uninstall", sandboxed(h, () => {
     if (!h.presence.some((s) => s.kind === "wake")) return;
     const root = mkdtempSync(join(tmpdir(), `mesh-contract-wake-${h.id}-`));
     const opts = { global: false };
@@ -105,7 +129,7 @@ async function runContract(t, h) {
 
     assert.equal(uninstallHarness(h.id, opts, root).ok, true);
     assert.equal(diagnoseWake(h.id, opts, root).installed, false);
-  });
+  }));
 
   await t.test("name resolution from fixture (and null for an unknown session)", () => {
     if (!h.name?.resolve) return;
@@ -180,6 +204,7 @@ test("a fake harness registers in a few lines and passes the same contract", asy
     aliases: ["fk"],
     displayName: "Fake",
     discovery: { binaries: [], markers: () => [], projectDir: ".fake" },
+    agents: { skills: "none", config: false, evidence: "unverified" },
     presence: [{
       kind: "plugin",
       script: "pi-presence-extension.mjs",

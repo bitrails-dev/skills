@@ -10,6 +10,7 @@ import antigravity from "./antigravity.mjs";
 import codex from "./codex.mjs";
 import opencode from "./opencode.mjs";
 import pi from "./pi.mjs";
+import muse from "./muse.mjs";
 import { DEFAULT_TTL_MS } from "./shared/process.mjs";
 
 /**
@@ -52,6 +53,7 @@ import { DEFAULT_TTL_MS } from "./shared/process.mjs";
  * @property {{ binaries: string[], markers: (root: string) => string[], skillDir?: () => string, projectDir: string }} discovery
  *   binaries: PATH lookups; markers: dirs whose existence means "installed"; skillDir: harness-local skill
  *   copy that counts as "mesh available"; projectDir: per-project dir used by the last-resort fallback
+ * @property {import("./shared/agents-dir.mjs").AgentsSupport} agents  how the harness treats the `.agents` convention
  * @property {PresenceSource[]} presence
  * @property {{ via: "hook"|"plugin"|"extension", inject: ("prompt"|"invocation"|"turn-end"|"poll")[], idle: "inject"|"toast-only", wake: WakeSpec }} delivery
  *   how queued mail reaches a running session. idle "inject": the harness-side component can wake an idle
@@ -69,13 +71,13 @@ import { DEFAULT_TTL_MS } from "./shared/process.mjs";
  *   read-only per-live-session poll (archived closes the session; activityMs keeps the TTL alive)
  * @property {{ signals: ("event"|"pid"|"ttl")[], ttlMs?: {idle: number, busy: number} }} end
  *   ttlMs overrides the default inactivity TTL for pid-less sessions
- * @property {{ exe: string[], isInteractiveTui: (cmdline: string) => boolean }} [process]
+ * @property {{ exe: (string|RegExp)[], isInteractiveTui: (cmdline: string) => boolean }} [process]
  *   separate TUI process the broker scans for (exe names without ".exe")
  * @property {object} [fixtures]  test data for the contract suite (see tests/harness-contract-test.mjs)
  */
 
 /** @type {Harness[]} */
-const harnesses = [claude, antigravity, codex, opencode, pi];
+const harnesses = [claude, antigravity, codex, opencode, pi, muse];
 
 const lookup = (name) => String(name || "").trim().toLowerCase();
 
@@ -89,6 +91,9 @@ export function validateDescriptor(h) {
   if (!Array.isArray(h.aliases) || h.aliases.some((a) => a !== a.toLowerCase())) fail("aliases must be lowercase strings");
   if (!h.displayName) fail("missing displayName");
   if (!["direct", "walk", "none", "provided"].includes(h.pid)) fail(`bad pid strategy ${h.pid}`);
+  if (!h.agents || !["both", "project", "user-import", "none"].includes(h.agents.skills) || typeof h.agents.config !== "boolean" || !h.agents.evidence) {
+    fail("agents {skills, config, evidence} required");
+  }
   if (!Array.isArray(h.presence) || h.presence.length === 0) fail("needs at least one presence source");
   for (const s of h.presence) {
     if (!["hook", "plugin", "extension", "process", "mcp", "wake"].includes(s.kind)) fail(`bad presence kind ${s.kind}`);
@@ -111,6 +116,7 @@ export function validateDescriptor(h) {
   if (h.pid === "none" && !h.end.signals.includes("ttl")) fail('pid "none" requires a "ttl" end signal');
   if (h.end.signals.includes("ttl") && h.end.ttlMs && !(h.end.ttlMs.idle > 0 && h.end.ttlMs.busy > 0)) fail("bad end.ttlMs");
   if (h.process && (!h.process.exe?.length || typeof h.process.isInteractiveTui !== "function")) fail("process needs exe[] and isInteractiveTui");
+  if (h.process && !h.process.exe.every((e) => typeof e === "string" || e instanceof RegExp)) fail("process.exe entries are strings or RegExp");
   if (h.name?.watch?.kind === "sqlite-poll" && !h.name.resolve && !h.pollSession) fail("sqlite-poll needs name.resolve or pollSession");
   return h;
 }
@@ -137,7 +143,7 @@ export const canonicalId = (name) => get(name)?.id ?? lookup(name);
 /** Descriptor whose scanned TUI process matches this executable name (".exe" optional). */
 export const byExe = (exeName) => {
   const n = lookup(exeName).replace(/\.exe$/, "");
-  return harnesses.find((h) => h.process?.exe.includes(n));
+  return harnesses.find((h) => h.process?.exe.some((e) => (e instanceof RegExp ? e.test(n) : e === n)));
 };
 
 /** Inactivity TTLs for pid-less interactive sessions of a harness. */

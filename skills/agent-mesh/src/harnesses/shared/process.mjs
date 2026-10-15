@@ -204,3 +204,21 @@ export function resolvePid(harness, sessionId, options = {}) {
 
 /** Inactivity TTLs for interactive sessions without a verifiable pid (idle / busy). */
 export const DEFAULT_TTL_MS = { idle: 10 * 60 * 1000, busy: 60 * 60 * 1000 };
+
+/**
+ * First positional token (subcommand or prompt) of a CLI command line, skipping flags and the values of
+ * `valueFlags`. Descriptors supply the flag/subcommand knowledge; the tokenizer is shared.
+ * @param {string} cmdline
+ * @param {{ valueFlags?: Set<string>, exitFlags?: string[] }} [opts] exitFlags: flags meaning "prints and exits"
+ * @returns {{ token?: string, exits?: boolean }}
+ */
+export function firstPositional(cmdline, { valueFlags = new Set(), exitFlags = ["-h", "--help", "-V", "--version"] } = {}) {
+  const toks = String(cmdline || "").match(/"[^"]*"|\S+/g)?.map((t) => t.replace(/^"|"$/g, "")) ?? [];
+  for (let i = 1; i < toks.length; i++) {
+    const t = toks[i];
+    if (exitFlags.includes(t)) return { exits: true };
+    if (!t.startsWith("-")) return { token: t.toLowerCase() };
+    if (valueFlags.has(t) && !t.includes("=")) i++;
+  }
+  return {};
+}

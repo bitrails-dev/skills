@@ -16,6 +16,7 @@ import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import * as registry from "../harnesses/index.mjs";
 import { HOOKS_DIR, isCommandAvailable } from "../harnesses/shared/install.mjs";
+import { skillInstalled, describeAgentsSupport } from "../harnesses/shared/agents-dir.mjs";
 
 export {
   isCommandAvailable,
@@ -98,9 +99,9 @@ export function resolveHarnessPaths(harness, options = {}, rootDir = process.cwd
  * @returns {string[]} List of detected canonical harness ids
  */
 export function autoDiscoverHarnesses(_options = {}, rootDir = process.cwd()) {
-  const universalSkill = existsSync(join(homedir(), ".agents", "skills", "agent-mesh", "SKILL.md"));
+  // the skill is available through the global or project `.agents/skills` convention, or the repo itself
   const repoSkill = existsSync(join(rootDir, "SKILL.md")) || existsSync(join(rootDir, "skills", "agent-mesh", "SKILL.md"));
-  const skillAvailable = universalSkill || repoSkill;
+  const skillAvailable = skillInstalled("global", rootDir) || skillInstalled("project", rootDir) || repoSkill;
 
   const discovered = [];
   for (const h of registry.all()) {
@@ -219,4 +220,10 @@ export function setOptIn(kind, enable, harnessName, options = {}, rootDir = proc
     ? (source, paths) => source.install(paths, scriptPath(source))
     : (source, paths) => source.uninstall(paths);
   return runSources(harnessName, options, rootDir, op, new Set(), kind);
+}
+
+/** One-line description of how a harness treats the `.agents` convention (doctor / setup output). */
+export function describeAgents(harnessName) {
+  const desc = registry.get(harnessName);
+  return desc ? describeAgentsSupport(desc.agents) : "unknown harness";
 }

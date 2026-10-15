@@ -223,7 +223,6 @@ async function main() {
     case "--init":
     case "--install":
     case "init":
-    case "setup":
     case "install": {
       const { harnesses, isGlobal } = parseHarnessSelection(cmd, args);
       const scope = isGlobal ? "global" : "project";
@@ -579,6 +578,17 @@ async function main() {
       process.exit(0);
     }
 
+    case "setup": {
+      // single-command flow: detect -> choose harnesses/action/components -> apply (see src/setup/setup.mjs)
+      const { runSetup } = await import("../src/setup/setup.mjs");
+      const code = await runSetup(
+        { argv: args, rootDir, meshHome: brokerRoot, brokerRoot, ipcAddress },
+        { stdin: process.stdin, stdout: process.stdout, isTTY: Boolean(process.stdin.isTTY && process.stdout.isTTY) },
+        { installHarness, uninstallHarness, diagnoseHarness, diagnoseMcp, diagnoseWake, autoDiscoverHarnesses, ensureBroker, stopBroker }
+      );
+      process.exit(code);
+    }
+
     case "mcp":
     case "wake": {
       // mesh mcp|wake install|remove|status [harness...|all] [--project|--global]
@@ -849,6 +859,8 @@ async function main() {
       console.log(`
 Agent Mesh CLI (v${VERSION})
 Commands:
+  setup [--yes --harness h,.. --action install|update|uninstall --mcp --wake --all --dry-run --purge]
+                                     Interactive checklist (or flags): install/update/uninstall in one round
   --init, --install [harnesses...]   Install requirements, configure hooks, and start broker (auto-discovers or assigns harnesses)
                                      Add --mcp to also register the opt-in MCP shim (mesh_send/mesh_ask/mesh_inbox/mesh_status)
   --uninstall [harnesses...]         Cleanly remove hooks and stop the broker daemon

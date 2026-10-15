@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { agentsPath } from "./shared/agents-dir.mjs";
 import { homedir } from "node:os";
 import { existsSync } from "node:fs";
 import { readSqliteRow, execSqlite } from "./shared/sqlite.mjs";
@@ -66,12 +67,13 @@ export default {
     skillDir: () => join(homedir(), ".gemini", "config", "skills", "agent-mesh"),
     projectDir: ".agents",
   },
+  agents: { skills: "project", config: true, evidence: "binary", note: "{workspace}/.agents/skills and .agents/hooks.json" },
   presence: [
     {
       kind: "hook",
       script: "agy-presence-hook.mjs",
       resolvePaths: ({ global, root }) => ({
-        targetPath: global ? join(homedir(), ".gemini", "config", "hooks.json") : join(root, ".agents", "hooks.json"),
+        targetPath: global ? join(homedir(), ".gemini", "config", "hooks.json") : agentsPath("project", root, "hooks.json"),
       }),
       install,
       uninstall,
@@ -81,7 +83,7 @@ export default {
       id: ID,
       // global path as written by `agy mcp add`; the project path is unverified
       resolvePaths: ({ global, root }) => ({
-        targetPath: global ? join(homedir(), ".gemini", "config", "mcp_config.json") : join(root, ".agents", "mcp_config.json"),
+        targetPath: global ? join(homedir(), ".gemini", "config", "mcp_config.json") : agentsPath("project", root, "mcp_config.json"),
       }),
       entryFor: (launch) => ({ ...launch, disabled: false }),
     }),

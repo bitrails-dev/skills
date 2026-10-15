@@ -78,6 +78,7 @@ export default {
     markers: (root) => [join(homedir(), ".config", "opencode"), join(homedir(), ".opencode"), join(root, ".opencode")],
     projectDir: ".opencode",
   },
+  agents: { skills: "none", config: false, evidence: "unverified", note: "no .agents strings in the 1.19.0 binary; uses ~/.config/opencode and .opencode" },
   presence: [
     {
       kind: "plugin",

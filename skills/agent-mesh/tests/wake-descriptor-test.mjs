@@ -16,6 +16,7 @@ const fake = {
   aliases: [],
   displayName: "Fake",
   discovery: { binaries: [], markers: () => [], projectDir: ".fake" },
+  agents: { skills: "none", config: false, evidence: "unverified" },
   presence: [{ kind: "wake", optIn: true, script: "x", resolvePaths: () => ({ targetPath: "x" }), install() {}, uninstall() {}, diagnose() {} }],
   pid: "direct",
   end: { signals: ["pid"] },

@@ -41,6 +41,7 @@ without it. Sessions announced by both hooks and MCP collapse into one row and o
 | `codex` | hooks.json hooks (run in the shared app-server), TUI scanner, thread db poll | `config.toml` `[mcp_servers.agent-mesh]` | tools only (servers are hosted by the daemon) |
 | `opencode` | plugin (`opencode.json` `plugin`) | `opencode.json` `mcp` | yes |
 | `pi` | extension (`~/.pi/agent/extensions`) | `~/.pi/agent/mcp.json` | yes |
+| `muse` | plugin bundle installed through the `muse plugins` CLI (hooks), session names from `session-index.db` | plugin bundle `agent-mesh-mcp` | yes |
 
 **Mail delivery.** Claude/Codex receive queued mail on the next prompt (and at turn end), Antigravity before each
 model call, OpenCode and Pi are woken while idle (plugin/extension inject a turn). An idle Claude/Codex/Antigravity
@@ -56,6 +57,8 @@ wrapped in an untrusted-provenance envelope. `mesh wait --session <id> [--stream
 
 Adding a harness is one descriptor file in `src/harnesses/` plus a registry line; see `docs/ADAPTERS.md`
 ("How to add a harness"). Design notes, MCP spawn behaviour per harness and the Codex app-server study live there too.
+
+**One-command install/update/uninstall:** `node ~/.agents/skills/agent-mesh/scripts/mesh.mjs setup` (interactive checklist; flags: `--yes --harness claude,codex --action install|update|uninstall --mcp --wake --all --dry-run --purge`).
 
 **User guide** (install, update, opt-ins, commands, troubleshooting, recovery runbook): [docs/GUIDE.md](docs/GUIDE.md).
 

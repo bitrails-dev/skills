@@ -22,6 +22,7 @@ export default {
     markers: (root) => [join(homedir(), ".pi"), join(root, ".pi")],
     projectDir: ".pi",
   },
+  agents: { skills: "both", config: false, evidence: "docs", note: "docs/skills.md: ~/.agents/skills/ and .agents/skills/ are read" },
   presence: [
     {
       kind: "extension",

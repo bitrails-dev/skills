@@ -23,8 +23,11 @@ that directory by absolute path; nothing is copied.
 | antigravity (`agy`) | block `agent-mesh-presence` in `~/.gemini/config/hooks.json` (project: `.agents/hooks.json`) | `~/.gemini/config/mcp_config.json` | none (pull + toast) |
 | opencode | loader `~/.config/opencode/plugins/agent-mesh-presence.js` + `plugin` entry in `~/.config/opencode/opencode.json` (project: `.opencode/`) | `mcp` key of `opencode.json` | none needed (plugin pushes) |
 | pi | loader `~/.pi/agent/extensions/agent-mesh-presence.js` (project: `.pi/extensions/`) | `~/.pi/agent/mcp.json` (project: `.pi/mcp.json`) | none needed (extension pushes) |
+| muse | plugin bundle `agent-mesh` (4 hook wrappers) installed with `muse plugins install --scope user` and approved; state under `<MESH_HOME>/.agent-mesh/muse-plugin/` | plugin bundle `agent-mesh-mcp` | none (pull + toast) |
 
-Config files are edited idempotently with a `.bak` next to them; foreign entries are left alone.
+Config files are edited idempotently with a `.bak` next to them; foreign entries are left alone. Muse is the exception: it
+has no hand-edited hook file, so mesh drives its `muse plugins` CLI instead. Which harnesses read the shared
+`~/.agents` / `.agents` skill folders is tabulated in [ADAPTERS.md section 12](ADAPTERS.md).
 
 State, shared by everything, in `~/.agent-mesh/` (or `$MESH_HOME/.agent-mesh`):
 
@@ -41,7 +44,35 @@ State, shared by everything, in `~/.agent-mesh/` (or `$MESH_HOME/.agent-mesh`):
 
 There is **one broker per user** (a background node process). Hooks never start it.
 
-## 2. First-time install
+## 2. First-time install (the one command)
+
+```sh
+mesh setup          # interactive: detects harnesses, pick install / update / uninstall + MCP / wake, confirm
+```
+
+`mesh setup` is the primary path for install, update and removal; it is idempotent and zero-dependency
+(readline). Same thing without questions:
+
+```sh
+mesh setup --yes --harness claude,codex --action install --mcp --wake     # explicit
+mesh setup --yes --all --action update                                    # refresh everything already installed
+mesh setup --yes --all --action uninstall [--purge]                       # remove all (opt-ins too); --purge also deletes ~/.agent-mesh
+mesh setup --dry-run --harness claude --action install --mcp              # print the plan only
+```
+
+| Flag | Meaning |
+|---|---|
+| `--action install|update|uninstall` | default: asked (interactive) / `install` with `--yes` |
+| `--harness a,b` / `--all` | which harnesses (aliases ok); default = detected. With `--all`, update/uninstall only touch installed ones |
+| `--mcp`, `--wake` | opt-in components (update keeps the ones already installed) |
+| `--project` / `--global` | scope (default global) |
+| `--yes`, `--dry-run`, `--purge`, `--restart`, `--no-broker`, `--interactive` | no questions / plan only / delete state dir / force broker restart / skip the broker / force prompts on a pipe |
+
+Without a terminal and without flags it prints the exact flags above and exits 2. After an install/update it
+starts the broker (an older broker is upgraded automatically; `--restart` forces it). If the package is
+published, `npx agent-mesh` runs the same flow (`scripts/agent-mesh.mjs`).
+
+### Manual path (what setup does under the hood)
 
 Prerequisites: Node 22.5+ (built-in `node:sqlite`), the harnesses you want, and the skill installed globally.
 
