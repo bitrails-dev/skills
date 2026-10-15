@@ -45,6 +45,8 @@ export default {
     }),
   ],
   pid: "direct", // the extension runs inside the harness: process.pid is the harness
+  // The extension polls the broker and injects with pi.sendUserMessage (always triggers a turn).
+  delivery: { via: "extension", inject: ["poll", "turn-end"], idle: "inject" },
   name: { watch: { kind: "event" } }, // session_info_changed -> rename event
   end: { signals: ["event", "pid"] }, // session_shutdown (reason "quit")
   fixtures: {},

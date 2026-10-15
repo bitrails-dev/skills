@@ -110,6 +110,8 @@ export default {
     mcpSource,
   ],
   pid: "walk",
+  // Mail reaches a running session at prompt,turn-end; an IDLE TUI cannot be woken (toast only).
+  delivery: { via: "hook", inject: ["prompt", "turn-end"], idle: "toast-only" },
   name: { resolve: resolveName, watch: { kind: "transcript-mtime" } },
   end: { signals: ["event", "pid"] },
   fixtures: {

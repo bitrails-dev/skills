@@ -6,6 +6,7 @@ import * as registry from "../harnesses/index.mjs";
 import { resolvePid, isBackgroundSession, isProcessAlive, getMeshHome } from "../harnesses/shared/process.mjs";
 
 export { buildHookCommand, MESH_HOOK_MATCHER } from "../harnesses/shared/install.mjs";
+export { formatMessages } from "../presence/inbox-format.mjs";
 export { readSqliteRow } from "../harnesses/shared/sqlite.mjs";
 export { isBackgroundSession, isProcessAlive, getMeshHome };
 
@@ -61,26 +62,6 @@ export function readStdinJson(options = {}) {
       resolve({});
     }
   });
-}
-
-/**
- * Formats claimed inbox messages into human- and model-readable text block.
- * @param {Array<object>} messages
- * @returns {string}
- */
-export function formatMessages(messages) {
-  if (!Array.isArray(messages) || messages.length === 0) return "";
-  const header = `[AGENT-MESH INBOX NOTIFICATION: ${messages.length} pending message(s)]`;
-  const body = messages
-    .map((m) => {
-      const fromStr = m.from_agent || "unknown";
-      const ticketStr = m.id || "none";
-      const hopsStr = m.hops !== undefined ? ` | Hops: ${m.hops}` : "";
-      return `--- Message from [${fromStr}] (Ticket: ${ticketStr}${hopsStr}) ---\n${m.body}`;
-    })
-    .join("\n\n");
-  const replyInstr = `\n\nTo reply, run: mesh reply --ticket <id> --to <agent> "<your response>"`;
-  return `${header}\n\n${body}${replyInstr}`;
 }
 
 /**

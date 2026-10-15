@@ -191,6 +191,31 @@ async function main() {
         durationMs: Date.now() - startTime,
       });
 
+      // PreInvocation runs before every model call: queued mail is injected as a user message
+      // (agy contract: {"injectSteps":[{"userMessage": "..."}]}), mid-turn included.
+      let injectSteps = [];
+      if (!process.env.MESH_AGENT) {
+        try {
+          const claim = await sendIpcRequest(
+            address,
+            { action: "claim_inbox", payload: { agent: "antigravity", sessionId } },
+            0,
+            { timeoutMs: 800 }
+          );
+          if (claim?.ok && Array.isArray(claim.messages) && claim.messages.length > 0) {
+            injectSteps = [{ userMessage: formatMessages(claim.messages) }];
+            await emitJson({ injectSteps });
+            await sendIpcRequest(
+              address,
+              { action: "ack", payload: { ids: claim.messages.map((m) => m.id) } },
+              0,
+              { timeoutMs: 800 }
+            ).catch(() => {});
+            process.exit(0);
+          }
+        } catch {}
+      }
+
       // PreInvocation expects a JSON object on stdout (e.g. {})
       await emitJson({});
       process.exit(0);

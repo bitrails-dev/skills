@@ -87,6 +87,8 @@ export default {
     }),
   ],
   pid: "walk",
+  // Mail reaches a running session at invocation,turn-end; an IDLE TUI cannot be woken (toast only).
+  delivery: { via: "hook", inject: ["invocation", "turn-end"], idle: "toast-only" },
   name: { resolve: resolveName, watch: { kind: "sqlite-poll" } },
   // agy has no SessionEnd hook: the exit is noticed by the pid watcher (or the TTL when no pid resolved).
   end: { signals: ["pid", "ttl"], ttlMs: DEFAULT_TTL_MS },

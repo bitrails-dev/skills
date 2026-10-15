@@ -41,6 +41,9 @@ import { DEFAULT_TTL_MS } from "./shared/process.mjs";
  *   binaries: PATH lookups; markers: dirs whose existence means "installed"; skillDir: harness-local skill
  *   copy that counts as "mesh available"; projectDir: per-project dir used by the last-resort fallback
  * @property {PresenceSource[]} presence
+ * @property {{ via: "hook"|"plugin"|"extension", inject: ("prompt"|"invocation"|"turn-end"|"poll")[], idle: "inject"|"toast-only" }} delivery
+ *   how queued mail reaches a running session. idle "inject": the harness-side component can wake an idle
+ *   session (polls + injects); "toast-only": nothing can wake an idle TUI, the broker raises a desktop toast.
  * @property {PidStrategy} pid
  * @property {(cmdline: string) => {background: boolean, sharedHost: boolean}} [classifyProcess]
  *   background: hooks stay silent (forks, --agent, -p); sharedHost: hooks run in a daemon, report no pid.
@@ -81,6 +84,7 @@ export function validateDescriptor(h) {
       for (const f of ["script", "resolvePaths", "install", "uninstall", "diagnose"]) if (!s[f]) fail(`${s.kind} source needs ${f}`);
     }
   }
+  if (!h.delivery || !["hook", "plugin", "extension"].includes(h.delivery.via) || !Array.isArray(h.delivery.inject) || !["inject", "toast-only"].includes(h.delivery.idle)) fail("delivery {via, inject[], idle} required");
   if (!h.end || !Array.isArray(h.end.signals) || h.end.signals.length === 0) fail("end.signals required");
   if (h.pid === "none" && !h.end.signals.includes("ttl")) fail('pid "none" requires a "ttl" end signal');
   if (h.end.signals.includes("ttl") && h.end.ttlMs && !(h.end.ttlMs.idle > 0 && h.end.ttlMs.busy > 0)) fail("bad end.ttlMs");

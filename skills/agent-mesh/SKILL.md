@@ -42,6 +42,11 @@ without it. Sessions announced by both hooks and MCP collapse into one row and o
 | `opencode` | plugin (`opencode.json` `plugin`) | `opencode.json` `mcp` | yes |
 | `pi` | extension (`~/.pi/agent/extensions`) | `~/.pi/agent/mcp.json` | yes |
 
+**Mail delivery.** Claude/Codex receive queued mail on the next prompt (and at turn end), Antigravity before each
+model call, OpenCode and Pi are woken while idle (plugin/extension inject a turn). An idle Claude/Codex/Antigravity
+TUI cannot be woken: the mesh raises a "message waiting" toast and the mail is delivered at its next prompt.
+Address a specific session with `--to <agent>@<session name or id prefix>`.
+
 Adding a harness is one descriptor file in `src/harnesses/` plus a registry line; see `docs/ADAPTERS.md`
 ("How to add a harness"). Design notes, MCP spawn behaviour per harness and the Codex app-server study live there too.
 

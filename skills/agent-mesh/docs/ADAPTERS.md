@@ -183,6 +183,40 @@ unload timing under a live observer in the real daemon (only isolated daemon tes
     (set `announce: false` when its servers are hosted by a shared daemon); otherwise document it as unsupported.
 12. Add driver in `src/drivers/` only if the harness should receive headless turns (separate concern).
 
+## 9. Mail delivery (queued message -> running session)
+
+Root causes found (reproduced in `tests/mail-delivery-test.mjs` against an isolated broker):
+
+| Harness | What claimed mail before | Why a message stayed queued / vanished |
+|---|---|---|
+| claude | Stop hook only (`presence-hook` Stop, plugin `stop-hook`) | An idle TUI never runs a hook; mail waited for the end of the next turn |
+| codex | Stop hook only (inside the shared app-server) | Same; plus `agent@<thread name>` never matched (see addressing) |
+| antigravity | Stop hook only | Same; PreInvocation (fires before every model call) ignored mail |
+| opencode | plugin `session.idle` called claim+ack with **no injection** | Mail was marked delivered and silently dropped (worse than queued) |
+| pi | extension `agent_end` called claim+ack with **no injection** | Same: consumed, never shown |
+| all | `agent@<name>` stored the raw string as `to_session`; claims use the session id | Never matched, stayed pending forever |
+| all | A claim whose hook died before `ack` stayed `claimed` forever | No reaper |
+
+Fixes (descriptor field `delivery: {via, inject[], idle}`):
+
+| Harness | Delivery path | Idle interactive session |
+|---|---|---|
+| claude, codex | `UserPromptSubmit` hook injects `hookSpecificOutput.additionalContext`; Stop hook (existing) keeps blocking with the mail | cannot be woken: "message waiting" toast |
+| antigravity | `PreInvocation` hook injects `{"injectSteps":[{"userMessage": ...}]}` (agy hook contract, from the binary's embedded docs); Stop hook (existing) | cannot be woken: toast |
+| opencode | plugin polls every 3s + on `session.idle`, injects with `client.session.promptAsync` | **woken** (starts a turn) |
+| pi | extension polls every 3s + on `agent_end`, injects with `pi.sendUserMessage(..., {deliverAs: "followUp"})` (always triggers a turn) | **woken** |
+| any with MCP | every `mesh_*` tool result carries "[mesh] N message(s) waiting: call mesh_inbox" | n/a (agent must call a tool) |
+
+Common rules: `agent@<ref>` resolves `<ref>` against live sessions (exact id, name, or unique id prefix);
+a failed injection `release_claim`s the tickets; claims not acked within 90s are returned to pending
+(skipped for agents with an in-flight headless turn); the broker raises a "message waiting" toast (once per
+30s per session) when the target is an interactive session of a `toast-only` harness.
+
+Honest limits: nothing can inject into an idle Claude Code, Codex or Antigravity TUI (no API; headless
+`-p --resume` would be a second writer on the same session, which the dual-writer rule forbids). A Codex wake
+would be possible through the app-server control socket (`turn/start` on the loaded thread, see section 6)
+but needs the observer client that was deliberately not built.
+
 ## 8. Open decisions and risks
 
 - D1 (decided): id `antigravity`, `agy` is an alias, no DB migration.

@@ -133,6 +133,8 @@ export default {
   // Hooks run inside the shared `codex app-server` daemon: the default classifier reports that as
   // shared-host (no pid), and the scanner supplies the TUI pid instead.
   pid: "walk",
+  // Mail reaches a running session at prompt,turn-end; an IDLE TUI cannot be woken (toast only).
+  delivery: { via: "hook", inject: ["prompt", "turn-end"], idle: "toast-only" },
   classifyProcess,
   name: { resolve: resolveName, watch: { kind: "sqlite-poll" } },
   pollSession,

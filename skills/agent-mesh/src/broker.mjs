@@ -29,6 +29,11 @@ import { McpDedupe } from "./presence/mcp-dedupe.mjs";
 export { isProcessAlive };
 
 
+/** A claim not acked within this window is returned to pending. */
+const CLAIM_TTL_MS = 90 * 1000;
+/** At most one "message waiting" toast per target session in this window. */
+const WAITING_TOAST_MS = 30 * 1000;
+
 export class AgentMeshBroker {
   /**
    * @param {string} [cwd=process.cwd()] - Target repository root directory.
@@ -69,6 +74,7 @@ export class AgentMeshBroker {
       processInfo: options.processInfo,
     });
     this.mcp = new McpDedupe({ repo: this.repo, notify: (p) => this.notifyDesktop(p), graceMs: options.mcpGraceMs });
+    this.waitingToasts = new Map(); // session id -> last "message waiting" toast time
     this.transcripts = new Map(); // sessionId -> { harness, path, mtime } for /rename detection
     this.turnRetries = new Map(); // agentId -> consecutive failed turns
     this.messageRetries = new Map(); // ticketId -> retry attempts
@@ -83,6 +89,46 @@ export class AgentMeshBroker {
     this.registerDriver("antigravity", createAntigravityDriver());
     this.registerDriver("codex", createCodexDriver());
     this.registerDriver("acp", createAcpDriver());
+  }
+
+  /**
+   * Resolves a user-supplied session reference (`agent@ref`) to a session id: exact id, exact name
+   * (case-insensitive) or unique id prefix among the agent's live sessions. Unknown refs pass through.
+   */
+  resolveSessionRef(agent, ref) {
+    if (!ref) return null;
+    const live = this.repo.listLiveSessions().filter((s) => s.harness === agent);
+    const lower = String(ref).toLowerCase();
+    const exact = live.find((s) => s.session_id === ref) || live.filter((s) => s.name && s.name.toLowerCase() === lower)[0];
+    if (exact) return exact.session_id;
+    const byPrefix = live.filter((s) => s.session_id.toLowerCase().startsWith(lower));
+    return byPrefix.length === 1 ? byPrefix[0].session_id : ref;
+  }
+
+  /**
+   * Delivery floor: when the target is an interactive session that nothing will wake (hook-only harness),
+   * raise a desktop toast so the human knows a message is waiting. Harnesses whose in-process plugin
+   * polls and injects (`delivery.idle === "inject"`) are skipped.
+   */
+  announceWaiting(msg) {
+    const target = registry.get(msg.to);
+    if (target?.delivery?.idle === "inject") return;
+    const rows = this.repo
+      .listLiveSessions()
+      .filter((s) => s.harness === msg.to && s.origin === "interactive" && (!msg.toSession || s.session_id === msg.toSession));
+    if (rows.length === 0) return; // no interactive owner: the headless dispatcher handles it
+    const now = Date.now();
+    for (const row of rows) {
+      if (now - (this.waitingToasts.get(row.session_id) || 0) < WAITING_TOAST_MS) continue;
+      this.waitingToasts.set(row.session_id, now);
+      this.notifyDesktop({
+        harness: msg.to,
+        event: "waiting",
+        state: `for ${row.name || String(row.session_id).slice(0, 8)} (from ${msg.from})`,
+        sessionId: row.session_id,
+        pid: row.pid || null,
+      });
+    }
   }
 
   // Scanner state, exposed for status/tests.
@@ -207,7 +253,7 @@ export class AgentMeshBroker {
           toSession = parts[1];
         }
         msg.to = this.resolveAgent(toTarget);
-        msg.toSession = toSession;
+        msg.toSession = this.resolveSessionRef(msg.to, toSession);
         msg.from = this.resolveAgent(msg.from);
 
         if (!msg.id) msg.id = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -219,6 +265,7 @@ export class AgentMeshBroker {
         }
 
         const res = this.repo.enqueueMessage(msg);
+        this.announceWaiting(msg);
         this.scheduleDispatch();
         return { ok: true, ticket: msg.id, createdAt: res.createdAt };
       }
@@ -247,6 +294,7 @@ export class AgentMeshBroker {
         };
 
         this.repo.enqueueMessage(replyMsg);
+        this.announceWaiting(replyMsg);
         this.scheduleDispatch();
         return { ok: true, ticket: replyMsg.id, parentId: ticket };
       }
@@ -344,6 +392,13 @@ export class AgentMeshBroker {
           this.repo.markDelivered(id);
         }
         return { ok: true, acknowledged: ids.length };
+      }
+
+      case "release_claim": {
+        // Delivery failed after claim_inbox (injection error): put the tickets back so they are retried
+        const ids = Array.isArray(req.payload.ids) ? req.payload.ids : [];
+        for (const id of ids) this.repo.restorePending(id);
+        return { ok: true, released: ids.length };
       }
 
       case "claim_inbox": {
@@ -448,6 +503,10 @@ export class AgentMeshBroker {
    * and transitions dead interactive sessions to closed.
    */
   reapStaleLeases() {
+    // Tickets claimed by a hook that died before acking must not stay claimed forever (at-least-once)
+    try {
+      this.repo.restoreStaleClaims(Date.now() - CLAIM_TTL_MS, [...this.busyAgents]);
+    } catch {}
     // 1. Check all live sessions with a recorded PID
     try {
       const live = this.repo.listLiveSessions();
@@ -729,13 +788,14 @@ Process the message(s) above, take appropriate action, and reply via the CLI.`;
     if (process.platform !== "win32") return;
 
     // Hooks announce session start/end themselves; the broker only raises daemon/inbox/kill events.
-    const notifyEvents = new Set(["inbox", "broker_start", "broker_stop", "killed", "renamed"]);
+    const notifyEvents = new Set(["inbox", "waiting", "broker_start", "broker_stop", "killed", "renamed"]);
     if (!notifyEvents.has(event) && !(force && (event === "start" || event === "end"))) return;
 
     const labels = {
       broker_start: "Broker started",
       broker_stop: "Broker stopped",
       inbox: "New message",
+      waiting: "Message waiting",
       killed: "Session ended",
       renamed: "Session renamed",
       start: "Session started",

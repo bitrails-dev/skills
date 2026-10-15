@@ -102,6 +102,8 @@ export default {
     }),
   ],
   pid: "direct", // the plugin runs inside the harness: process.pid is the harness
+  // The in-process plugin polls the broker and injects with client.session.promptAsync (wakes an idle session).
+  delivery: { via: "plugin", inject: ["poll", "turn-end"], idle: "inject" },
   name: { watch: { kind: "event" } }, // session.updated -> rename event
   end: { signals: ["event", "pid"] }, // session.deleted / server.instance.disposed
   fixtures: {},

@@ -13,6 +13,7 @@ import { resolveIpcAddress, sendIpcRequest } from "../ipc.mjs";
 import {
   readStdinJson,
   emitJson,
+  formatMessages,
   resolveTrueHarnessPid,
   isBackgroundSession,
   resolveSessionName,
@@ -163,10 +164,36 @@ async function main() {
         err = e.message;
       }
 
+      // Deliver queued mail as additional context for the prompt being submitted (Claude and Codex share
+      // this UserPromptSubmit output shape). An idle session never runs this hook: that case is the toast floor.
+      let delivered = 0;
+      if (!process.env.MESH_AGENT) {
+        try {
+          const claim = await sendIpcRequest(address, {
+            action: "claim_inbox",
+            payload: { agent: harness, sessionId },
+          }, 0, { timeoutMs: 800 });
+          if (claim?.ok && Array.isArray(claim.messages) && claim.messages.length > 0) {
+            const ids = claim.messages.map((m) => m.id);
+            try {
+              await emitJson({
+                hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: formatMessages(claim.messages) },
+              });
+              await sendIpcRequest(address, { action: "ack", payload: { ids } }, 0, { timeoutMs: 800 });
+              delivered = ids.length;
+            } catch {
+              // output or ack failed: let the broker's claim reaper (or this call) return them to pending
+              await sendIpcRequest(address, { action: "release_claim", payload: { ids } }, 0, { timeoutMs: 800 }).catch(() => {});
+            }
+          }
+        } catch {}
+      }
+
       appendHookAuditLog({
         harness,
         event: "UserPromptSubmit",
         state: "busy",
+        inboxCount: delivered,
         sessionId,
         pid,
         address,

@@ -255,6 +255,25 @@ export class MeshRepository {
   }
 
   /**
+   * Returns claimed-but-never-acked messages to pending (a hook died between claim and ack).
+   * @param {number} cutoffMs claims older than this timestamp are restored
+   * @param {string[]} [skipAgents] agents with an in-flight headless turn (their claims are legitimately long)
+   * @returns {number} Restored row count.
+   */
+  restoreStaleClaims(cutoffMs, skipAgents = []) {
+    const rows = this.db
+      .prepare("SELECT id, to_agent FROM messages WHERE status = 'claimed' AND delivered_at IS NOT NULL AND delivered_at < ?")
+      .all(cutoffMs);
+    let restored = 0;
+    for (const r of rows) {
+      if (skipAgents.includes(r.to_agent)) continue;
+      this.stmtRestorePending.run(r.id);
+      restored++;
+    }
+    return restored;
+  }
+
+  /**
    * Restores all claimed messages of an agent to pending.
    * @param {string} agentId
    * @returns {number} Restored row count.

@@ -4,15 +4,21 @@
  * Subscribes to Pi lifecycle events:
  * - session_start: Announces live session to the broker.
  * - agent_start: Announces busy turn execution.
- * - agent_end: Claims pending messages and announces idle state.
+ * - agent_end: Announces idle state and delivers queued mail.
+ * - mail delivery: also polled every few seconds while idle; mail is injected with pi.sendUserMessage (always
+ *   triggers a turn, so an idle session wakes). A failed injection releases the claim.
  * - session_info_changed: Announces a rename.
  * - session_shutdown: Announces end only for reason "quit" (reload/new/resume/fork keep the process).
  */
 
 import { resolveIpcAddress } from "../ipc.mjs";
-import { send, claimAndAck } from "../presence/announce.mjs";
+import { send, deliverInbox } from "../presence/announce.mjs";
 
 let currentId = null; // stable per start so a rename never forks the session identity
+let agentBusy = false;
+let delivering = false;
+let pollTimer = null;
+const POLL_MS = 3000;
 
 const sessionName = (pi) => (typeof pi?.getSessionName === "function" ? pi.getSessionName() : null) || undefined;
 
@@ -44,28 +50,47 @@ async function announce(event, pi, ev = {}, name = sessionName(pi)) {
   });
 }
 
+/** Claims queued mail and starts a turn with it (only while the agent is idle). */
+async function deliver(pi, ev = {}) {
+  if (process.env.MESH_AGENT || agentBusy || delivering || typeof pi?.sendUserMessage !== "function") return;
+  const sessionId = currentId || sessionName(pi) || ev?.sessionId;
+  if (!sessionId) return;
+  delivering = true;
+  try {
+    await deliverInbox(getAddress(), "pi", sessionId, (text) => {
+      pi.sendUserMessage(text, { deliverAs: "followUp" });
+    });
+  } catch {
+    // never let delivery errors reach Pi
+  } finally {
+    delivering = false;
+  }
+}
+
 async function onAgentEnd(pi, ev = {}) {
   if (process.env.MESH_AGENT) return;
-
-  const address = getAddress();
   const sessionId = currentId || sessionName(pi) || ev?.sessionId || `pi-${Date.now()}`;
-  const pid = process.pid;
-
-  await claimAndAck(address, "pi", sessionId);
-  await send(address, "session_event", { harness: "pi", sessionId, event: "idle", pid, name: sessionName(pi) });
+  await send(getAddress(), "session_event", { harness: "pi", sessionId, event: "idle", pid: process.pid, name: sessionName(pi) });
+  await deliver(pi, ev);
 }
 
 export default function piPresenceExtension(pi) {
   if (typeof pi?.on === "function") {
     pi.on("session_start", async (ev) => {
       await announce("start", pi, ev);
+      if (!pollTimer) {
+        pollTimer = setInterval(() => { void deliver(pi); }, POLL_MS);
+        pollTimer.unref?.();
+      }
     });
 
     pi.on("agent_start", async (ev) => {
+      agentBusy = true;
       await announce("busy", pi, ev);
     });
 
     pi.on("agent_end", async (ev) => {
+      agentBusy = false;
       await onAgentEnd(pi, ev);
     });
 
@@ -74,7 +99,11 @@ export default function piPresenceExtension(pi) {
     });
 
     pi.on("session_shutdown", async (ev) => {
-      if (ev?.reason === "quit") await announce("end", pi, ev);
+      if (ev?.reason === "quit") {
+        if (pollTimer) clearInterval(pollTimer);
+        pollTimer = null;
+        await announce("end", pi, ev);
+      }
     });
   }
 }

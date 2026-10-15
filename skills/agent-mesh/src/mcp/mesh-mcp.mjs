@@ -182,7 +182,25 @@ export class MeshMcpServer {
     return { content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) };
   }
 
+  /** Tool dispatch plus a "you have mail" hint on every result except mesh_inbox itself. */
   async callTool(name, args) {
+    const result = await this.runTool(name, args);
+    if (name !== "mesh_inbox") await this.addMailHint(result);
+    return result;
+  }
+
+  async addMailHint(result) {
+    try {
+      const agent = this.harness || String(this.clientInfo?.name || "mcp");
+      const res = await sendIpcRequest(this.address(), { action: "inbox", payload: { agent } }, 0, IPC);
+      const waiting = res?.ok && Array.isArray(res.messages) ? res.messages.length : 0;
+      if (waiting > 0) {
+        result.content.push({ type: "text", text: `[mesh] ${waiting} message(s) waiting for you: call mesh_inbox to read them.` });
+      }
+    } catch {}
+  }
+
+  async runTool(name, args) {
     try {
       switch (name) {
         case "mesh_send":
