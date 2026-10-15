@@ -8,7 +8,7 @@
 import { statSync, existsSync, writeFileSync, unlinkSync, appendFileSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
 import { initDatabase, MeshRepository } from "./db.mjs";
 import { getIpcAddress, startIpcServer } from "./ipc.mjs";
 import { createClaudeDriver } from "./drivers/claude.mjs";
@@ -37,6 +37,44 @@ export function isProcessAlive(pid) {
   } catch (err) {
     return err.code === "EPERM";
   }
+}
+
+// Terminal UIs whose hooks fire only at first prompt (Codex) or without a usable PID (agy, Codex):
+// the broker finds the TUI process itself. process name (no .exe) -> harness.
+const TUI_PROCS = { codex: "codex", agy: "antigravity" };
+// Subcommands/flags that mean "not an interactive TUI" (daemon, helper, headless run).
+const NON_TUI_ARGS = /(?:^|\s)(?:app-server|daemon|proxy|exec|mcp-server|mcp|login|logout|sandbox|serve|language[-_]server|--headless|--print|-p)(?:\s|$)/;
+
+/** Default process source: [{pid, name}] via tasklist (win32) or ps. Name+pid only: cheap enough for a 3s tick. */
+function listProcesses() {
+  return new Promise((res) => {
+    const win = process.platform === "win32";
+    execFile(win ? "tasklist" : "ps", win ? ["/FO", "CSV", "/NH"] : ["-eo", "pid=,comm="], { windowsHide: true, maxBuffer: 8 << 20 }, (err, out) => {
+      if (err) return res([]);
+      const rows = [];
+      for (const line of String(out).split(/\r?\n/)) {
+        const m = win ? line.match(/^"([^"]+)","(\d+)"/) : line.trim().match(/^(\d+)\s+(.+)$/);
+        if (!m) continue;
+        rows.push(win ? { name: m[1], pid: Number(m[2]) } : { pid: Number(m[1]), name: m[2].split("/").pop() });
+      }
+      res(rows);
+    });
+  });
+}
+
+/** Default one-shot detail lookup for a NEW pid: { ppid, cmd } or null. */
+function processInfo(pid) {
+  return new Promise((res) => {
+    const win = process.platform === "win32";
+    const args = win
+      ? ["-NoProfile", "-NonInteractive", "-Command", `$p=Get-CimInstance Win32_Process -Filter "ProcessId=${pid}";if($p){"$($p.ParentProcessId)|$($p.CommandLine)"}`]
+      : ["-o", "ppid=,args=", "-p", String(pid)];
+    execFile(win ? "pwsh.exe" : "ps", args, { windowsHide: true, timeout: 8000 }, (err, out) => {
+      if (err) return res(null);
+      const m = win ? String(out).trim().match(/^(\d+)\|(.*)$/s) : String(out).trim().match(/^(\d+)\s+(.*)$/s);
+      res(m ? { ppid: Number(m[1]), cmd: m[2] } : null);
+    });
+  });
 }
 
 export class AgentMeshBroker {
@@ -70,6 +108,13 @@ export class AgentMeshBroker {
     this.busyAgents = new Set();
     this.activeTurns = new Map(); // agentId -> AbortController
     this.lastExternalPoll = 0;
+    this.processSource = options.processSource || listProcesses; // injectable for tests
+    this.processInfo = options.processInfo || processInfo;
+    this.lastProcScan = 0;
+    this.scanning = false;
+    this.scannedOnce = false;
+    this.tuiSeen = new Map(); // pid -> true (interactive TUI) | false (helper/background)
+    this.unboundTui = new Map(); // pid -> provisional sessionId, waiting for the first real hook event
     this.transcripts = new Map(); // sessionId -> { harness, path, mtime } for /rename detection
     this.turnRetries = new Map(); // agentId -> consecutive failed turns
     this.messageRetries = new Map(); // ticketId -> retry attempts
@@ -159,6 +204,7 @@ export class AgentMeshBroker {
       this.reapStaleLeases();
       this.watchSessionNames();
       if (Date.now() - this.lastExternalPoll >= 5000) this.watchExternalSessions();
+      if (Date.now() - this.lastProcScan >= 3000) this.scanTuiProcesses();
     }, 2000);
     this.pidWatchTimer.unref?.();
 
@@ -257,11 +303,14 @@ export class AgentMeshBroker {
         if (transcript) this.transcripts.set(sessionId, { harness: this.resolveAgent(harness), path: transcript, mtime: 0 });
         if (event === "end" || event === "closed") this.transcripts.delete(sessionId);
         const resolvedHarness = this.resolveAgent(harness);
+        // Codex/agy: attach the first real hook session to the TUI process found by the scanner
+        const tui = this.bindTui(resolvedHarness, sessionId, Number(pid) || null, event);
+        if (tui.ignore) return { ok: true, state: "closed" };
         const res = this.repo.updateSessionEvent({
           harness: resolvedHarness,
           sessionId,
           event,
-          pid: Number(pid) || null,
+          pid: tui.pid,
           cwd: cwd || this.cwd,
           origin: origin || "interactive",
           name: name || null,
@@ -299,7 +348,7 @@ export class AgentMeshBroker {
           });
         }
 
-        return { ok: true, state: res.state };
+        return { ok: true, state: res.state, bound: tui.bound };
       }
 
       case "status": {
@@ -416,6 +465,82 @@ export class AgentMeshBroker {
    */
   scheduleDispatch() {
     setImmediate(() => this.dispatchPending());
+  }
+
+  /**
+   * Finds interactive Codex/agy TUI processes (hooks only fire at first prompt, and Codex hooks run in
+   * the shared app-server with no PID) and registers a provisional session per TUI so presence appears
+   * at app open and the PID watcher reports exit. Only NEW pids trigger the (async) detail lookup.
+   */
+  async scanTuiProcesses() {
+    if (this.scanning) return;
+    this.scanning = true;
+    this.lastProcScan = Date.now();
+    try {
+      const procs = await this.processSource();
+      const first = !this.scannedOnce;
+      const alive = new Set();
+      const fresh = [];
+      for (const { pid, name } of procs) {
+        const harness = TUI_PROCS[String(name).toLowerCase().replace(/.exe$/, "")];
+        if (!harness || !this.running) continue;
+        alive.add(pid);
+        if (this.tuiSeen.has(pid)) continue;
+        this.tuiSeen.set(pid, false); // mark first: never re-query this pid
+        fresh.push({ pid, harness });
+      }
+      // One detail lookup per NEW pid, in parallel (each is a ~1-2s pwsh spawn on Windows)
+      const infos = await Promise.all(fresh.map((f) => this.processInfo(f.pid)));
+      const isTui = (info) => info?.cmd && !NON_TUI_ARGS.test(info.cmd);
+      fresh.forEach((f, i) => { if (isTui(infos[i])) this.tuiSeen.set(f.pid, true); });
+      for (const [i, { pid, harness }] of fresh.entries()) {
+        if (!this.tuiSeen.get(pid)) continue;
+        if (this.tuiSeen.get(infos[i].ppid) === true) { this.tuiSeen.set(pid, false); continue; } // helper child of a TUI
+        const live = this.repo.listLiveSessions().filter((s) => s.harness === harness && s.origin === "interactive");
+        if (live.some((s) => s.pid === pid)) continue; // already tracked by a hook
+        if (first) {
+          // Broker restart: adopt a live PID-less row (Codex) instead of duplicating it
+          const orphan = live.find((s) => !s.pid);
+          if (orphan) { this.repo.setSessionPid(orphan.session_id, pid); continue; }
+        }
+        const sessionId = `tui:${harness}-${pid}`;
+        this.repo.updateSessionEvent({ harness, sessionId, event: "start", pid, cwd: this.cwd, origin: "interactive" });
+        this.unboundTui.set(pid, sessionId);
+        if (!first) this.notifyDesktop({ harness, event: "start", state: "idle", pid, force: true });
+      }
+      for (const pid of [...this.tuiSeen.keys()]) {
+        if (!alive.has(pid)) { this.tuiSeen.delete(pid); this.unboundTui.delete(pid); }
+      }
+      this.scannedOnce = true;
+    } catch {} finally {
+      this.scanning = false;
+    }
+  }
+
+  /**
+   * Binds a hook's real session to a scanner-found TUI pid so the row carries a pid the PID watcher can use.
+   * ponytail: Codex hook pids are null, so binding takes the most recent unbound TUI of that harness. With
+   * 2+ TUIs opened before either sends a prompt that can swap them, and a Codex /new inside one TUI
+   * (new thread, same process) stays unbound until the idle TTL.
+   * @returns {{pid: number|null, bound: boolean, ignore?: boolean}}
+   */
+  bindTui(harness, sessionId, pid, event) {
+    const out = { pid, bound: false };
+    if (!sessionId || !Object.values(TUI_PROCS).includes(harness) || String(sessionId).startsWith("tui:")) return out;
+    const row = this.repo.db.prepare("SELECT state, pid FROM sessions WHERE session_id = ?").get(sessionId);
+    const closed = !row || row.state === "closed" || row.state === "lost";
+    // The TUI exited and closed this row; stray app-server task events must not resurrect it
+    if (row && closed && event !== "start" && row.pid && !isProcessAlive(row.pid)) return { ...out, ignore: true };
+    if (!closed || !["start", "busy", "idle"].includes(event)) return out;
+    if (pid && this.tuiSeen.get(pid) === true) {
+      out.bound = this.unboundTui.delete(pid);
+      return out;
+    }
+    const candidates = [...this.unboundTui].filter(([p, id]) => id.startsWith(`tui:${harness}-`) && isProcessAlive(p)).map(([p]) => p);
+    const tuiPid = candidates[candidates.length - 1];
+    if (!tuiPid) return out;
+    this.unboundTui.delete(tuiPid);
+    return { pid: tuiPid, bound: true };
   }
 
   /**

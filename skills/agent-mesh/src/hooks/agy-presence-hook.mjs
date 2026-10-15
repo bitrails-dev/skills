@@ -101,6 +101,7 @@ async function main() {
     if (phase === "SessionStart") {
       let reqOk = false;
       let reqErr = null;
+      let bound = false; // broker already toasted this TUI when its process appeared
       try {
         const res = await sendIpcRequest(
           address,
@@ -120,11 +121,12 @@ async function main() {
           { timeoutMs: 800 }
         );
         reqOk = res?.ok ?? false;
+        bound = Boolean(res?.bound);
       } catch (err) {
         reqErr = err.message;
       }
 
-      notifyHookPresence({
+      if (!bound) notifyHookPresence({
         harness: "antigravity",
         event: "SessionStart",
         state: "start",

@@ -154,7 +154,7 @@ export class MeshRepository {
         cwd = excluded.cwd,
         state = excluded.state,
         origin = excluded.origin,
-        pid = excluded.pid,
+        pid = COALESCE(excluded.pid, CASE WHEN sessions.state IN ('closed', 'lost') THEN NULL ELSE sessions.pid END),
         last_seen = excluded.last_seen,
         updated_at = excluded.updated_at
     `);
@@ -169,7 +169,7 @@ export class MeshRepository {
 
     this.stmtGetActiveSession = db.prepare(`
       SELECT * FROM sessions
-      WHERE harness = ? AND state NOT IN ('lost', 'closed')
+      WHERE harness = ? AND state NOT IN ('lost', 'closed') AND session_id NOT LIKE 'tui:%'
       ORDER BY (state = 'human-held' OR (state IN ('idle', 'busy') AND origin = 'interactive')) DESC, updated_at DESC
       LIMIT 1
     `);
@@ -335,6 +335,11 @@ export class MeshRepository {
       }
     }
     return { ok: true, state, renamed };
+  }
+
+  /** Records the OS pid of a live session (no state change). */
+  setSessionPid(sessionId, pid) {
+    this.db.prepare("UPDATE sessions SET pid = ? WHERE session_id = ?").run(pid, sessionId);
   }
 
   /**

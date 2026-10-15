@@ -7,7 +7,7 @@
     "mesh": "./scripts/mesh.mjs"
   },
   "scripts": {
-    "test": "node --test tests/phase1-test.mjs tests/phase2-test.mjs tests/swarm-test.mjs tests/resilience-test.mjs tests/mesh-routing-test.mjs tests/presence-test.mjs tests/version-migration-test.mjs tests/hooks-install-test.mjs tests/agy-adapter-test.mjs tests/ipc-watch-notify-test.mjs tests/session-name-test.mjs tests/harness-names-test.mjs"
+    "test": "node --test tests/phase1-test.mjs tests/phase2-test.mjs tests/swarm-test.mjs tests/resilience-test.mjs tests/mesh-routing-test.mjs tests/presence-test.mjs tests/version-migration-test.mjs tests/hooks-install-test.mjs tests/agy-adapter-test.mjs tests/ipc-watch-notify-test.mjs tests/session-name-test.mjs tests/harness-names-test.mjs tests/tui-scan-test.mjs"
   },
   "keywords": [
     "agent-mesh",
