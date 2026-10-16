@@ -12,7 +12,8 @@
 import { fileURLToPath } from "node:url";
 import { resolveIpcAddress, sendIpcRequest } from "../ipc.mjs";
 import * as registry from "../harnesses/index.mjs";
-import { fetchIdentity } from "../presence/announce.mjs";
+import { fetchIdentity, settleClaim } from "../presence/announce.mjs";
+import { formatBatch } from "../presence/inbox-format.mjs";
 import { sessionStartOutput } from "../presence/identity.mjs";
 import {
   readStdinJson,
@@ -212,14 +213,10 @@ async function main() {
             { timeoutMs: 800 }
           );
           if (claim?.ok && Array.isArray(claim.messages) && claim.messages.length > 0) {
-            injectSteps = [{ userMessage: formatMessages(claim.messages) }];
+            const batch = formatBatch(claim.messages);
+            injectSteps = [{ userMessage: batch.text }];
             await emitJson({ injectSteps });
-            await sendIpcRequest(
-              address,
-              { action: "ack", payload: { ids: claim.messages.map((m) => m.id) } },
-              0,
-              { timeoutMs: 800 }
-            ).catch(() => {});
+            await settleClaim(address, batch, { timeoutMs: 800 });
             process.exit(0);
           }
         } catch {}
@@ -251,7 +248,8 @@ async function main() {
     }
 
     if (res?.ok && Array.isArray(res.messages) && res.messages.length > 0) {
-      const reason = formatMessages(res.messages);
+      const batch = formatBatch(res.messages);
+      const reason = batch.text;
 
       // Emit continue decision with prompt reason to re-enter agent execution loop
       await emitJson({
@@ -259,16 +257,8 @@ async function main() {
         reason,
       });
 
-      // Acknowledge delivery
-      await sendIpcRequest(
-        address,
-        {
-          action: "ack",
-          payload: { ids: res.messages.map((m) => m.id) },
-        },
-        0,
-        { timeoutMs: 800 }
-      ).catch(() => {});
+      // Ack what was delivered, release the rest
+      await settleClaim(address, batch, { timeoutMs: 800 });
 
       notifyHookPresence({
         harness: "antigravity",

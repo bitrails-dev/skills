@@ -10,7 +10,8 @@
 
 import { isProcessAlive } from "../harnesses/shared/process.mjs";
 import { sendIpcRequest } from "../ipc.mjs";
-import { formatMessages } from "../presence/inbox-format.mjs";
+import { formatBatch } from "../presence/inbox-format.mjs";
+import { settleClaim } from "../presence/announce.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -62,9 +63,10 @@ export async function runWait(opts) {
 
     switch (res.status) {
       case "mail": {
-        await out(`${formatMessages(res.messages)}\n`);
-        await sendIpcRequest(address, { action: "ack", payload: { ids: res.messages.map((m) => m.id) } }, 1).catch(() => {});
-        delivered += res.messages.length;
+        const batch = formatBatch(res.messages);
+        await out(`${batch.text}\n`);
+        await settleClaim(address, batch);
+        delivered += batch.includedIds.length;
         if (!stream) {
           const rearm = opts.rearmCommand ? `\n[mesh] Listener finished. To receive further messages re-arm it: ${opts.rearmCommand}\n` : "";
           if (rearm) await out(rearm);

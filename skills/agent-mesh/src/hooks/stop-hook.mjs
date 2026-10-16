@@ -8,7 +8,8 @@
  */
 
 import { sendIpcRequest, resolveIpcAddress } from "../ipc.mjs";
-import { formatMessages } from "../presence/inbox-format.mjs";
+import { formatBatch } from "../presence/inbox-format.mjs";
+import { settleClaim } from "../presence/announce.mjs";
 
 /**
  * Reads Claude Code hook input from stdin.
@@ -67,15 +68,11 @@ async function main() {
     });
 
     if (res.ok && res.messages && res.messages.length > 0) {
-      const payload = { decision: "block", reason: formatMessages(res.messages) };
-      process.stdout.write(JSON.stringify(payload) + "\n");
+      const batch = formatBatch(res.messages);
+      process.stdout.write(JSON.stringify({ decision: "block", reason: batch.text }) + "\n");
 
-      // Acknowledge: the block reason injects these messages into the next turn,
-      // which is delivery for interactive sessions (H5)
-      await sendIpcRequest(address, {
-        action: "ack",
-        payload: { ids: res.messages.map((m) => m.id) },
-      }).catch(() => {});
+      // The block reason injects the batch into the next turn, which is delivery (H5); the rest is released
+      await settleClaim(address, batch);
     } else {
       allow();
     }

@@ -11,7 +11,8 @@ import { existsSync, mkdirSync, writeFileSync, statSync, unlinkSync } from "node
 import { join } from "node:path";
 import { resolveIpcAddress, sendIpcRequest } from "../ipc.mjs";
 import * as registry from "../harnesses/index.mjs";
-import { fetchIdentity } from "../presence/announce.mjs";
+import { fetchIdentity, settleClaim } from "../presence/announce.mjs";
+import { formatBatch } from "../presence/inbox-format.mjs";
 import { sessionStartOutput } from "../presence/identity.mjs";
 import {
   readStdinJson,
@@ -185,12 +186,13 @@ async function main() {
           }, 0, { timeoutMs: 800 });
           if (claim?.ok && Array.isArray(claim.messages) && claim.messages.length > 0) {
             const ids = claim.messages.map((m) => m.id);
+            const batch = formatBatch(claim.messages);
             try {
               await emitJson({
-                hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: formatMessages(claim.messages) },
+                hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: batch.text },
               });
-              await sendIpcRequest(address, { action: "ack", payload: { ids } }, 0, { timeoutMs: 800 });
-              delivered = ids.length;
+              await settleClaim(address, batch, { timeoutMs: 800 });
+              delivered = batch.includedIds.length;
             } catch {
               // output or ack failed: let the broker's claim reaper (or this call) return them to pending
               await sendIpcRequest(address, { action: "release_claim", payload: { ids } }, 0, { timeoutMs: 800 }).catch(() => {});
@@ -230,14 +232,11 @@ async function main() {
         }, 1, { timeoutMs: 800 });
 
         if (res.ok && res.messages && res.messages.length > 0) {
-          const payload = { decision: "block", reason: formatMessages(res.messages) };
-          await emitJson(payload);
+          const batch = formatBatch(res.messages);
+          await emitJson({ decision: "block", reason: batch.text });
 
-          // Acknowledge delivery
-          await sendIpcRequest(address, {
-            action: "ack",
-            payload: { ids: res.messages.map((m) => m.id) },
-          }, 0, { timeoutMs: 800 }).catch(() => {});
+          // Ack what was delivered, release what did not fit
+          await settleClaim(address, batch, { timeoutMs: 800 });
 
           notifyHookPresence({
             harness,

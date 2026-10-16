@@ -5,7 +5,7 @@
  */
 
 import { sendIpcRequest } from "../ipc.mjs";
-import { formatMessages } from "./inbox-format.mjs";
+import { formatBatch } from "./inbox-format.mjs";
 
 /** Fire-and-forget broker request; resolves null when the broker is unreachable. */
 export const send = (address, action, payload, options) =>
@@ -24,18 +24,19 @@ export const send = (address, action, payload, options) =>
  * @returns {Promise<number>} number of delivered messages
  */
 export async function deliverInbox(address, agent, sessionId, inject, options, wake = false) {
-  const res = await send(address, "claim_inbox", { agent, sessionId, wake }, options);
+  const res = await send(address, "claim_inbox", { agent, sessionId, wake, budget: !wake }, options);
   const messages = res?.ok && Array.isArray(res.messages) ? res.messages : [];
   if (messages.length === 0) return 0;
   const ids = messages.map((m) => m.id);
+  const batch = formatBatch(messages);
   try {
-    await inject(formatMessages(messages), messages);
+    await inject(batch.text, messages.filter((m) => batch.includedIds.includes(m.id)));
   } catch {
     await send(address, "release_claim", { ids }, options);
     return 0;
   }
-  await send(address, "ack", { ids }, options);
-  return messages.length;
+  await settleClaim(address, batch, options);
+  return batch.includedIds.length;
 }
 
 /**
@@ -46,4 +47,14 @@ export async function deliverInbox(address, agent, sessionId, inject, options, w
 export async function fetchIdentity(address, query, options = { timeoutMs: 800 }) {
   const res = await send(address, "whoami", query, options);
   return res?.ok ? res : null;
+}
+
+/**
+ * Settles a claim after delivery: ack what was actually delivered, give the rest back to the queue.
+ * @param {string} address
+ * @param {{ includedIds: string[], deferredIds: string[] }} batch result of formatBatch
+ */
+export async function settleClaim(address, batch, options) {
+  if (batch.includedIds.length) await send(address, "ack", { ids: batch.includedIds }, options);
+  if (batch.deferredIds.length) await send(address, "release_claim", { ids: batch.deferredIds }, options);
 }

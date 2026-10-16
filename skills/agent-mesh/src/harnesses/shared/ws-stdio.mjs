@@ -14,6 +14,7 @@ import { randomBytes } from "node:crypto";
  */
 export function wsOverStdio(proc, { onMessage, onOpen, onClose }) {
   let buf = Buffer.alloc(0);
+  let fragments = [];
   let upgraded = false;
   let closed = false;
   const queue = [];
@@ -76,10 +77,19 @@ export function wsOverStdio(proc, { onMessage, onOpen, onClose }) {
         off = 10;
       }
       if (buf.length < off + len) return;
+      const fin = (buf[0] & 0x80) !== 0;
       const op = buf[0] & 0x0f;
       const payload = buf.slice(off, off + len);
       buf = buf.slice(off + len);
-      if (op === 1) onMessage(payload.toString());
+      if (op === 1 || op === 0) {
+        // text frame or continuation: accumulate until FIN
+        fragments.push(payload);
+        if (fin) {
+          const whole = Buffer.concat(fragments).toString();
+          fragments = [];
+          onMessage(whole);
+        }
+      }
       else if (op === 9) proc.stdin.write(Buffer.from([0x8a, 0x80, 0, 0, 0, 0])); // ping -> empty masked pong
       else if (op === 8) close("server-close");
     }

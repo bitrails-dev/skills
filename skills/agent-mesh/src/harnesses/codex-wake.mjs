@@ -16,7 +16,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { wsOverStdio } from "./shared/ws-stdio.mjs";
-import { formatMessages } from "../presence/inbox-format.mjs";
+import { formatBatch } from "../presence/inbox-format.mjs";
 
 /**
  * The codex executable: MESH_CODEX_BIN, else the managed daemon's release binary (a real .exe, so no shell is
@@ -35,7 +35,7 @@ export function resolveCodexBin(env = process.env) {
 }
 
 /** app-server protocol lines this injector was written and tested against (userAgent version prefix). */
-export const SUPPORTED_VERSIONS = ["0.162."];
+export const SUPPORTED_VERSIONS = ["0.162.", "0.163."];
 
 // Streaming/delta notifications this client never needs: opt out so it is not flooded.
 const OPT_OUT = [
@@ -55,6 +55,7 @@ const OPT_OUT = [
 export function createCodexInjector({ api, options = {} }) {
   const log = options.log ?? (() => {});
   const tickMs = options.tickMs ?? 2000;
+  const requestTimeoutMs = options.requestTimeoutMs ?? 8000;
   const stats = { connected: false, version: null, disabled: null, injected: 0, lastError: null, reconnects: 0 };
   const threadStatus = new Map(); // thread id -> "idle" | "active" | "notLoaded" | "systemError"
   const pending = new Map(); // rpc id -> resolve
@@ -74,7 +75,7 @@ export function createCodexInjector({ api, options = {} }) {
     return { ...wsOverStdio(proc, handlers), pid: proc.pid };
   };
 
-  const request = (method, params, timeoutMs = 8000) =>
+  const request = (method, params, timeoutMs = requestTimeoutMs) =>
     new Promise((resolve, reject) => {
       if (!transport) return reject(new Error("not connected"));
       const id = ++nextId;
@@ -114,7 +115,9 @@ export function createCodexInjector({ api, options = {} }) {
 
   const drop = (reason) => {
     if (!transport) return;
+    const dead = transport;
     transport = null;
+    try { dead.close?.(); } catch {} // always reap the proxy child
     stats.connected = false;
     stats.lastError = reason;
     for (const resolve of pending.values()) resolve({ error: { message: `connection lost: ${reason}` } });
@@ -186,16 +189,24 @@ export function createCodexInjector({ api, options = {} }) {
       if ((await statusOf(threadId)) !== "idle") return; // active/notLoaded: next-prompt hook or TUI close handles it
       const messages = api.claim(threadId);
       if (messages.length === 0) return;
-      const ids = messages.map((m) => m.id);
-      try {
-        await request("turn/start", { threadId, input: [{ type: "text", text: formatMessages(messages) }] });
+      const batch = formatBatch(messages);
+      const allIds = messages.map((m) => m.id);
+      const delivered = () => {
         threadStatus.set(threadId, "active");
-        api.ack(ids);
-        stats.injected += messages.length;
+        api.ack(batch.includedIds);
+        if (batch.deferredIds.length) api.release(batch.deferredIds);
+        stats.injected += batch.includedIds.length;
+      };
+      try {
+        await request("turn/start", { threadId, input: [{ type: "text", text: batch.text }] });
+        delivered();
       } catch (err) {
-        api.release(ids);
         stats.lastError = err.message;
-        log(`codex wake: turn/start failed for ${threadId}: ${err.message}`);
+        // A timeout does not mean the turn did not start: releasing blindly could deliver the mail twice.
+        const status = await statusOf(threadId).catch(() => null);
+        if (status === "active") delivered();
+        else api.release(allIds);
+        log(`codex wake: turn/start failed for ${threadId}: ${err.message} (thread ${status ?? "unknown"})`);
       }
     } finally {
       injecting.delete(threadId);
