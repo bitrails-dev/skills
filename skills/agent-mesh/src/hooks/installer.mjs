@@ -227,3 +227,23 @@ export function describeAgents(harnessName) {
   const desc = registry.get(harnessName);
   return desc ? describeAgentsSupport(desc.agents) : "unknown harness";
 }
+
+/**
+ * Installed components of a harness in global scope: { hooks, mcp, wake } (null = unsupported). Runs file reads
+ * and, for CLI-managed harnesses, short CLI calls: call it from CLIs/shims, never from the broker loop.
+ */
+export function componentsOf(harnessName) {
+  const desc = registry.get(harnessName);
+  if (!desc) return null;
+  const opts = { global: true };
+  const on = (r) => (r.supported === false ? null : Boolean(r.installed));
+  try {
+    return {
+      hooks: Boolean(diagnoseHarness(desc.id, opts).installed),
+      mcp: on(diagnoseMcp(desc.id, opts)),
+      wake: on(diagnoseWake(desc.id, opts)),
+    };
+  } catch {
+    return null;
+  }
+}

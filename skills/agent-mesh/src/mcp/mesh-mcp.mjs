@@ -5,7 +5,7 @@
  *
  * Protocol subset (newline-delimited JSON-RPC 2.0 on stdio; stdout carries protocol messages only):
  *   initialize, notifications/initialized, ping, tools/list, tools/call.
- * Tools (thin wrappers over the existing broker IPC): mesh_send, mesh_ask, mesh_inbox, mesh_status.
+ * Tools (thin wrappers over the existing broker IPC): mesh_send, mesh_ask, mesh_inbox, mesh_whoami, mesh_status.
  * Presence: announces `start` after initialize and `end` on stdin EOF / SIGTERM. The session id is
  * `mcp:<harness>:<pid>`; the broker merges it with hook/scanner rows for the same (harness, pid).
  *
@@ -16,8 +16,10 @@ import { pathToFileURL } from "node:url";
 import { resolveIpcAddress, sendIpcRequest } from "../ipc.mjs";
 import * as registry from "../harnesses/index.mjs";
 import { walkPastShells } from "../harnesses/shared/process.mjs";
-import { formatMessages } from "../hooks/common.mjs";
+import { formatBatch } from "../presence/inbox-format.mjs";
+import { settleClaim } from "../presence/announce.mjs";
 import { formatIdentityBlock, formatIdentityLine } from "../presence/identity.mjs";
+import { componentsOf } from "../hooks/installer.mjs";
 
 const LATEST_PROTOCOL = "2025-06-18";
 const SUPPORTED_PROTOCOLS = [LATEST_PROTOCOL, "2025-03-26", "2024-11-05"];
@@ -212,7 +214,9 @@ export class MeshMcpServer {
   async addMailHint(result) {
     try {
       const agent = this.harness || String(this.clientInfo?.name || "mcp");
-      const res = await sendIpcRequest(this.address(), { action: "inbox", payload: { agent } }, 0, IPC);
+      const sessionId = await this.resolveSessionId();
+      if (!sessionId) return; // unknown session: do not count other sessions' mail
+      const res = await sendIpcRequest(this.address(), { action: "inbox", payload: { agent, sessionId } }, 0, IPC);
       const waiting = res?.ok && Array.isArray(res.messages) ? res.messages.length : 0;
       if (waiting > 0) {
         result.content.push({ type: "text", text: `[mesh] ${waiting} message(s) waiting for you: call mesh_inbox to read them.` });
@@ -247,9 +251,10 @@ export class MeshMcpServer {
     const from = this.harness || String(this.clientInfo?.name || "mcp");
     // H3: agent-sent chains increment hops (same rule as the CLI)
     const hops = process.env.MESH_AGENT ? Number(process.env.MESH_HOPS || 0) + 1 : 0;
+    const fromSession = (await this.resolveSessionId().catch(() => null)) || undefined;
     const res = await sendIpcRequest(
       this.address(),
-      { action, payload: { from, to: to.trim(), body, kind: action === "ask" ? "ask" : "notify", hops } },
+      { action, payload: { from, fromSession, to: to.trim(), body, kind: action === "ask" ? "ask" : "notify", hops } },
       0,
       IPC
     );
@@ -257,13 +262,38 @@ export class MeshMcpServer {
     return this.textResult(`Message queued for '${to}'. Ticket: ${res.ticket}`);
   }
 
+  /**
+   * The real mesh session this shim belongs to (hook-registered row preferred over the shim's own mcp: row), or
+   * null when it cannot be resolved unambiguously.
+   */
+  async resolveSessionId() {
+    const info = await this.identity().catch(() => null);
+    if (!info?.session) return null;
+    if (!this.pid && info.matches > 1) return null; // cwd-only match with several sessions: ambiguous
+    return info.session.id;
+  }
+
   async inbox() {
     const agent = this.harness || String(this.clientInfo?.name || "mcp");
-    const res = await sendIpcRequest(this.address(), { action: "claim_inbox", payload: { agent, sessionId: this.sessionId } }, 0, IPC);
+    let sessionId = await this.resolveSessionId();
+    if (!sessionId) {
+      // A client that is not a mesh session (no live interactive session for this agent) may read untargeted mail.
+      const st = await sendIpcRequest(this.address(), { action: "status" }, 0, IPC).catch(() => null);
+      const live = (st?.liveSessions || []).filter((s) => s.harness === agent && s.origin === "interactive");
+      if (live.length === 0) sessionId = null;
+      else
+        return this.textResult(
+        "Cannot tell which mesh session this is (no unambiguous live session for this process), so no mail was claimed. " +
+          "Run mesh_whoami / mesh_status, or read it with the mesh CLI: mesh inbox <agent>.",
+        true
+      );
+    }
+    const res = await sendIpcRequest(this.address(), { action: "claim_inbox", payload: { agent, sessionId } }, 0, IPC);
     const messages = res.ok && Array.isArray(res.messages) ? res.messages : [];
     if (messages.length === 0) return this.textResult("No pending mesh messages.");
-    await sendIpcRequest(this.address(), { action: "ack", payload: { ids: messages.map((m) => m.id) } }, 0, IPC).catch(() => null);
-    return this.textResult(formatMessages(messages));
+    const batch = formatBatch(messages);
+    await settleClaim(this.address(), batch, IPC);
+    return this.textResult(batch.text);
   }
 
   /** Identity record from the broker: by pid (real session row preferred), else by cwd. */
@@ -276,6 +306,7 @@ export class MeshMcpServer {
   async whoami() {
     const info = await this.identity();
     if (!info) return this.textResult("Agent mesh broker unreachable: identity unknown.", true);
+    info.components = componentsOf(info.harness); // local file reads, in this shim's process
     const extra = info.matches > 1 ? `\nNote: ${info.matches} sessions match this working directory; showing the most recent.` : "";
     return this.textResult(formatIdentityBlock(info) + extra);
   }

@@ -92,6 +92,7 @@ export function initDatabase(dbPath) {
 
   const msgCols = db.prepare("PRAGMA table_info(messages)").all().map((c) => c.name);
   if (!msgCols.includes("to_session")) db.exec("ALTER TABLE messages ADD COLUMN to_session TEXT;");
+  if (!msgCols.includes("claimed_by")) db.exec("ALTER TABLE messages ADD COLUMN claimed_by TEXT;");
 
   return db;
 }
@@ -219,13 +220,6 @@ export class MeshRepository {
   }
 
   /**
-   * Atomically claims all pending messages for an agent using UPDATE ... RETURNING.
-   * Optionally filtered to a specific target session ID.
-   * @param {string} agentId
-   * @param {string|null} [sessionId=null]
-   * @returns {Array<object>} Claimed message rows.
-   */
-  /**
    * The single live interactive session of a harness that receives UNTARGETED mail: the most recently active
    * real session (provisional `tui:`/`mcp:` rows only count when nothing else is live).
    * @param {string} harness
@@ -256,12 +250,12 @@ export class MeshRepository {
     const eligible = wakeOnly ? " AND (kind IN ('ask', 'reply') OR priority >= 1)" : "";
     return this.db
       .prepare(
-        `UPDATE messages SET status = 'claimed', delivered_at = ?
+        `UPDATE messages SET status = 'claimed', delivered_at = ?, claimed_by = ?
          WHERE to_agent = ? AND status = 'pending'
            AND ((? IS NOT NULL AND to_session = ?) OR (to_session IS NULL AND ? = 1))${eligible}
          RETURNING *`
       )
-      .all(Date.now(), agentId, sessionId, sessionId, untargeted);
+      .all(Date.now(), sessionId, agentId, sessionId, sessionId, untargeted);
   }
 
   /** True when a session has pending mail that is allowed to wake it (strict claim rules, no side effects). */
@@ -283,17 +277,32 @@ export class MeshRepository {
    * that agent sends next, so interactive sessions cannot ping-pong without hitting the hop limit.
    * @returns {{ id: string, hops: number }|null}
    */
-  latestDeliveredTo(agentId, sinceMs) {
+  latestDeliveredTo(agentId, sinceMs, sessionId = null) {
     return (
       this.db
         .prepare(
           `SELECT id, hops FROM messages WHERE to_agent = ? AND status IN ('claimed', 'delivered') AND delivered_at >= ?
+             AND (? IS NULL OR claimed_by = ?)
            ORDER BY delivered_at DESC LIMIT 1`
         )
-        .get(agentId, sinceMs) ?? null
+        .get(agentId, sinceMs, sessionId, sessionId) ?? null
     );
   }
 
+  /** Pending mail one session could claim (its targeted mail, plus untargeted mail when it is the primary session). */
+  getPendingForSession(agentId, sessionId) {
+    const primary = this.primaryInteractiveSession(agentId);
+    const untargeted = primary === null || primary === sessionId;
+    return this.getPendingMessages(agentId).filter((m) => m.to_session === sessionId || (!m.to_session && untargeted));
+  }
+
+  /**
+   * Headless dispatcher claim: all pending mail of an agent (targeted mail honored when a session id is
+   * given). Interactive sessions use claimInboxForSession (strict) instead.
+   * @param {string} agentId
+   * @param {string|null} [sessionId=null]
+   * @returns {Array<object>} Claimed message rows.
+   */
   claimMessagesForAgent(agentId, sessionId = null) {
     const now = Date.now();
     return this.stmtClaimMessages.all(now, agentId, sessionId, sessionId);

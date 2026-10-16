@@ -25,8 +25,8 @@ import { isProcessAlive } from "./harnesses/shared/process.mjs";
 import { TuiScanner } from "./presence/tui-scanner.mjs";
 import { watchTranscripts, pollExternalSessions } from "./presence/name-watch.mjs";
 import { McpDedupe } from "./presence/mcp-dedupe.mjs";
-import { diagnoseHarness, diagnoseMcp, diagnoseWake } from "./hooks/installer.mjs";
 import { WakePolicy, readWakeConfig } from "./presence/wake-policy.mjs";
+import { guardWrite } from "./harnesses/shared/home-guard.mjs";
 
 export { isProcessAlive };
 
@@ -60,6 +60,7 @@ export class AgentMeshBroker {
     this.brokerPidPath = join(this.meshDir, "broker.json");
     this.ipcAddress = getIpcAddress(this.cwd);
 
+    guardWrite(this.meshDir); // tests must never create broker state in the real home
     mkdirSync(this.logsDir, { recursive: true });
 
     this.db = initDatabase(this.dbPath);
@@ -104,7 +105,7 @@ export class AgentMeshBroker {
    * Match order: session id (exact, name, id prefix), then harness+pid, then cwd. Provisional `tui:`/`mcp:` rows
    * are used only when nothing else matches.
    */
-  whoami({ harness, sessionId, pid, cwd }) {
+  whoami({ harness, sessionId, pid, pids, cwd }) {
     const agent = harness ? this.resolveAgent(harness) : null;
     const live = this.repo.listLiveSessions().filter((s) => s.origin === "interactive");
     const provisional = (s) => s.session_id.startsWith("tui:") || s.session_id.startsWith("mcp:");
@@ -116,23 +117,15 @@ export class AgentMeshBroker {
       if (matches.length === 0) matches = pool.filter((s) => s.session_id.toLowerCase().startsWith(lower));
     }
     if (matches.length === 0 && pid) matches = pool.filter((s) => s.pid === Number(pid));
-    if (matches.length === 0 && cwd && !sessionId && !pid) matches = pool.filter((s) => s.cwd === cwd);
+    if (matches.length === 0 && Array.isArray(pids) && pids.length) {
+      const set = new Set(pids.map(Number));
+      matches = pool.filter((s) => set.has(s.pid));
+    }
+    if (matches.length === 0 && cwd && !sessionId && !pid && !(pids && pids.length)) matches = pool.filter((s) => s.cwd === cwd);
     matches.sort((a, b) => Number(provisional(a)) - Number(provisional(b)) || (b.updated_at || 0) - (a.updated_at || 0));
     const row = matches[0] || null;
     const desc = registry.get(row?.harness || agent);
     const h = desc?.id ?? agent ?? row?.harness ?? null;
-    const opts = { global: true };
-    const on = (r) => (r.supported === false ? null : Boolean(r.installed));
-    let components = null;
-    if (desc) {
-      try {
-        components = {
-          hooks: Boolean(diagnoseHarness(desc.id, opts).installed),
-          mcp: on(diagnoseMcp(desc.id, opts)),
-          wake: on(diagnoseWake(desc.id, opts)),
-        };
-      } catch {}
-    }
     const mine = (m) => !m.to_session || m.to_session === row?.session_id;
     return {
       ok: true,
@@ -146,7 +139,7 @@ export class AgentMeshBroker {
       muted: this.wake.isMuted(),
       version: this.version,
       wake: desc ? { tier: desc.delivery.wake.tier, candidate: desc.delivery.wake.candidate?.tier ?? null } : null,
-      components,
+      components: null, // computed by the caller (componentsOf): file/CLI work must not run in this loop
     };
   }
 
@@ -245,8 +238,17 @@ export class AgentMeshBroker {
    * interactive sessions that never pass hops themselves).
    */
   propagateHops(msg) {
-    if (!registry.get(msg.from)) return; // humans/CLI start fresh chains
-    const parent = this.repo.latestDeliveredTo(this.resolveAgent(msg.from), Date.now() - HOP_WINDOW_MS);
+    const fromAgent = this.resolveAgent(msg.from);
+    if (!registry.get(fromAgent)) return; // humans/unknown senders start fresh chains
+    // The sender session: named by the sender, else the harness's only live interactive session. Ambiguous
+    // senders are not attributed (attributing to the wrong session would raise false hop limits).
+    let sessionId = msg.fromSession || null;
+    if (!sessionId) {
+      const live = this.repo.listLiveSessions().filter((s) => s.harness === fromAgent && s.origin === "interactive");
+      if (live.length !== 1) return;
+      sessionId = live[0].session_id;
+    }
+    const parent = this.repo.latestDeliveredTo(fromAgent, Date.now() - HOP_WINDOW_MS, sessionId);
     if (!parent) return;
     msg.parentId ||= parent.id;
     msg.hops = Math.max(msg.hops || 0, (parent.hops || 0) + 1);
@@ -587,7 +589,9 @@ export class AgentMeshBroker {
         const targetAgent = this.resolveAgent(req.payload.agent);
         const messages = req.payload.delivered
           ? this.repo.getDeliveredMessages(targetAgent, req.payload.limit || 20)
-          : this.repo.getPendingMessages(targetAgent);
+          : req.payload.sessionId
+            ? this.repo.getPendingForSession(targetAgent, req.payload.sessionId)
+            : this.repo.getPendingMessages(targetAgent);
         return { ok: true, messages };
       }
 
@@ -612,7 +616,10 @@ export class AgentMeshBroker {
         const targetAgent = this.resolveAgent(req.payload.agent);
         const sessionId = req.payload.sessionId || null;
         const isWake = Boolean(req.payload.wake);
-        if (isWake) {
+        // push harnesses deliver at turn end too: that path spends the same budget/mute (budget:true) but is
+        // not limited to ask/urgent mail (wake:true is the idle-wake eligibility filter)
+        const spends = isWake || Boolean(req.payload.budget);
+        if (spends) {
           // Idle-session wake: policy first (mute switch, per-session budget); falls back to pull + toast
           const verdict = this.wake.check(sessionId || targetAgent);
           if (!verdict.ok) {
@@ -621,7 +628,7 @@ export class AgentMeshBroker {
           }
         }
         const messages = this.repo.claimInboxForSession(targetAgent, sessionId, { wakeOnly: isWake });
-        if (isWake && messages.length > 0) this.wake.record(sessionId || targetAgent);
+        if (spends && messages.length > 0) this.wake.record(sessionId || targetAgent);
         if (messages.length > 0) {
           this.notifyDesktop({
             harness: targetAgent,

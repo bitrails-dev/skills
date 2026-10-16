@@ -24,6 +24,18 @@ const ID = "muse";
 const HOOK_PLUGIN = "agent-mesh";
 const MCP_PLUGIN = "agent-mesh-mcp";
 
+/** muse-bin-1.10.0-R6256.1.exe vs muse-bin-1.9.2-...: compare numeric version parts, not strings. */
+export function compareMuseBin(a, b) {
+  const nums = (f) => (f.match(/(\d+)/g) || []).map(Number);
+  const x = nums(a);
+  const y = nums(b);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] ?? 0) - (y[i] ?? 0);
+    if (d) return d;
+  }
+  return 0;
+}
+
 // ---- locating the CLI -----------------------------------------------------------------------------------
 
 /**
@@ -39,7 +51,7 @@ export function resolveMuseBin(env = process.env) {
       const version = readFileSync(join(dir, ".muse-version"), "utf8").trim();
       const exact = join(dir, `muse-bin-${version}.exe`);
       if (existsSync(exact)) return { bin: exact, shell: false };
-      const newest = readdirSync(dir).filter((f) => /^muse-bin-.*\.exe$/.test(f)).sort().pop();
+      const newest = readdirSync(dir).filter((f) => /^muse-bin-.*\.exe$/.test(f)).sort(compareMuseBin).pop();
       if (newest) return { bin: join(dir, newest), shell: false };
     } catch {}
     return { bin: join(dir, names.find((n) => existsSync(join(dir, n)))), shell: process.platform === "win32" };
@@ -48,18 +60,22 @@ export function resolveMuseBin(env = process.env) {
 }
 
 /** Runs the muse CLI; throws on failure. cwd matters for project scope. */
-function muse(args, { cwd, env = process.env } = {}) {
+function muse(args, { cwd, env = process.env, timeout = 30000 } = {}) {
   const { bin, shell } = resolveMuseBin(env);
-  return execFileSync(bin, args, { cwd, env, encoding: "utf8", timeout: 60000, windowsHide: true, shell, stdio: ["ignore", "pipe", "pipe"] });
+  return execFileSync(bin, args, { cwd, env, encoding: "utf8", timeout, windowsHide: true, shell, stdio: ["ignore", "pipe", "pipe"] });
 }
 
+let availableCache = null; // per process + binary: --version is a process spawn
 const museAvailable = () => {
+  const { bin } = resolveMuseBin();
+  if (availableCache?.bin === bin) return availableCache.ok;
+  let ok = false;
   try {
-    muse(["--version"]);
-    return true;
-  } catch {
-    return false;
-  }
+    muse(["--version"], { timeout: 10000 });
+    ok = true;
+  } catch {}
+  availableCache = { bin, ok };
+  return ok;
 };
 
 // ---- plugin bundles ---------------------------------------------------------------------------------------
@@ -145,7 +161,7 @@ function removeBundle(name, p) {
 
 function bundleInstalled(name, p) {
   try {
-    const list = JSON.parse(muse(["plugins", "list", "--json"], { cwd: p.root }));
+    const list = JSON.parse(muse(["plugins", "list", "--json"], { cwd: p.root, timeout: 10000 }));
     return (list.plugins || []).some((e) => e.record?.id === name && e.record?.enabled !== false);
   } catch {
     return false;
@@ -283,6 +299,7 @@ export default {
         for (const k of ["HOME", "USERPROFILE"]) process.env[k] = tmpHome;
         process.env.XDG_CONFIG_HOME = join(tmpHome, ".config");
         process.env.APPDATA = join(tmpHome, "AppData", "Roaming");
+        process.env.LOCALAPPDATA = join(tmpHome, "AppData", "Local");
         return () => {
           for (const [k, v] of Object.entries(saved)) {
             if (v === undefined) delete process.env[k];

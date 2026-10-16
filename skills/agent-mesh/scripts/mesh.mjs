@@ -441,13 +441,32 @@ async function main() {
       }
 
       // H3: Increment hops on agent-sent ask chains; human-sent asks start at 0
-      const effectiveHops = (meshAgent && meshAgent !== "human-cli") ? meshHops + 1 : 0;
+      // Sent through a harness's shell tool? Then this CLI is a descendant of a live session: attribute the
+      // message to it so the broker's hop propagation applies (a bare "human-cli" would bypass the loop guard).
+      let sender = { from: meshAgent, fromSession: process.env.MESH_SESSION_ID || undefined };
+      if (meshAgent === "human-cli") {
+        try {
+          // $MESH_SESSION_ID names the session explicitly; otherwise the process ancestry identifies it
+          let query = process.env.MESH_SESSION_ID ? { sessionId: process.env.MESH_SESSION_ID } : null;
+          if (!query) {
+            const { ancestorPids } = await import("../src/presence/caller.mjs");
+            const chain = ancestorPids(process.pid);
+            if (chain.length) query = { pids: chain };
+          }
+          if (query) {
+            const who = await sendIpcRequest(ipcAddress, { action: "whoami", payload: query });
+            if (who?.ok && who.session) sender = { from: who.session.harness, fromSession: who.session.id };
+          }
+        } catch {}
+      }
+      const effectiveHops = sender.from !== "human-cli" ? meshHops + 1 : 0;
 
       try {
         const res = await sendIpcRequest(ipcAddress, {
           action: cmd,
           payload: {
-            from: meshAgent,
+            from: sender.from,
+            fromSession: sender.fromSession,
             to,
             toSession,
             body,
@@ -613,6 +632,10 @@ async function main() {
           payload: { harness: opt("--harness"), sessionId, pid: opt("--pid") ? Number(opt("--pid")) : undefined, cwd: sessionId || opt("--pid") ? undefined : process.cwd() },
         });
         if (!info.ok) throw new Error(info.error || "whoami failed");
+        if (!args.includes("--line")) {
+          const { componentsOf } = await import("../src/hooks/installer.mjs");
+          info.components = componentsOf(info.harness);
+        }
         console.log(args.includes("--line") ? formatIdentityLine(info) : formatIdentityBlock(info));
         if (!info.session) process.exitCode = 1;
       } catch (err) {
