@@ -35,6 +35,8 @@ export function parseSetupArgs(argv) {
     } else if (name.startsWith("-")) out.unknown.push(argv[i]);
     else out.positional.push(argv[i]);
   }
+  // bare words are harness names: `mesh setup claude --yes` means --harness claude
+  out.harness.push(...out.positional.flatMap((p) => p.split(",")).map((s) => s.trim()).filter(Boolean));
   return out;
 }
 
@@ -84,6 +86,10 @@ export async function runSetup({ argv, rootDir, meshHome, brokerRoot, ipcAddress
   }
   if (args.action && !ACTIONS.includes(args.action)) {
     out(`Unknown action '${args.action}' (use ${ACTIONS.join("|")}).\n\n${USAGE}`);
+    return 2;
+  }
+  if (has("--purge") && has("--project")) {
+    out("--purge deletes the global state directory (~/.agent-mesh): it cannot be combined with --project.\nRun it with --global (default) after removing every harness.");
     return 2;
   }
   const interactive = has("--interactive") || (io.isTTY && !has("--yes"));
@@ -228,7 +234,11 @@ export async function runSetup({ argv, rootDir, meshHome, brokerRoot, ipcAddress
   }
   if (action === "uninstall" && has("--purge")) {
     const dir = join(meshHome, ".agent-mesh");
-    if (existsSync(dir)) {
+    const stillUsed = supported.filter((id) => statusOf(deps, id, { global: true }, rootDir).hooks);
+    if (stillUsed.length) {
+      failed = true;
+      out(`[purge] refused: ${stillUsed.join(", ")} still use the mesh (global hooks installed). Uninstall them first.`);
+    } else if (existsSync(dir)) {
       rmSync(dir, { recursive: true, force: true });
       out(`[purge] deleted ${dir}`);
     }

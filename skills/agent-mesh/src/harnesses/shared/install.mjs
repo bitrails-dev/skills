@@ -240,35 +240,72 @@ const TOML_END = "# agent-mesh:end";
 const tomlHeader = /^\[mcp_servers\.(?:"agent-mesh"|agent-mesh)(?:\.[^\]]+)?\]$/;
 const tomlMainHeader = /^\[mcp_servers\.(?:"agent-mesh"|agent-mesh)\]$/;
 
-/** Removes the managed block and any `[mcp_servers.agent-mesh*]` tables (e.g. added by `codex mcp add`). */
-function stripTomlMcp(text) {
-  const out = [];
-  let skipping = false;
-  let inBlock = false;
-  for (const line of text.split(/\r?\n/)) {
-    if (line.trim() === TOML_BEGIN) { inBlock = true; continue; }
-    if (line.trim() === TOML_END) { inBlock = false; continue; }
-    if (inBlock) continue;
-    if (/^\s*\[/.test(line)) skipping = tomlHeader.test(line.trim());
-    if (!skipping) out.push(line);
+/** Splits text into lines keeping each line's own terminator, so untouched lines are written back byte for byte. */
+const toLines = (text) => text.match(/[^\r\n]*(?:\r\n|\n|$)/g).filter((l) => l !== "");
+const bare = (line) => line.replace(/\r?\n$/, "").trim();
+
+/**
+ * Line ranges [start, end) owned by mesh: the marker block, and any `[mcp_servers.agent-mesh*]` tables
+ * (e.g. added by `codex mcp add`) up to the next table header.
+ */
+function managedRanges(lines) {
+  const ranges = [];
+  for (let i = 0; i < lines.length; ) {
+    const t = bare(lines[i]);
+    if (t === TOML_BEGIN) {
+      let j = i + 1;
+      while (j < lines.length && bare(lines[j]) !== TOML_END) j++;
+      ranges.push([i, Math.min(j + 1, lines.length)]);
+      i = j + 1;
+    } else if (tomlHeader.test(t)) {
+      let j = i + 1;
+      while (j < lines.length && !/^\s*\[/.test(lines[j]) && bare(lines[j]) !== TOML_BEGIN) j++;
+      ranges.push([i, j]);
+      i = j;
+    } else {
+      i++;
+    }
   }
-  return out.join("\n").replace(/\n{3,}/g, "\n\n").replace(/\s+$/, "");
+  return ranges;
 }
 
-const tomlStr = (s) => JSON.stringify(s);
+const tomlStr = (v) => JSON.stringify(v);
+const detectEol = (text) => (/\r\n/.test(text) ? "\r\n" : "\n");
 
 /** Codex config.toml: managed `[mcp_servers.agent-mesh]` block between marker comments (no TOML parser). */
 export function installTomlMcp(filePath, { command, args }) {
   const existing = existsSync(filePath) ? readFileSync(filePath, "utf8") : "";
+  const eol = detectEol(existing);
   const block = [
     TOML_BEGIN,
     `[mcp_servers.${MCP_SERVER_NAME}]`,
     `command = ${tomlStr(command)}`,
     `args = [${args.map(tomlStr).join(", ")}]`,
     TOML_END,
-  ].join("\n");
-  const base = stripTomlMcp(existing);
-  const next = `${base ? `${base}\n\n` : ""}${block}\n`;
+  ].map((l) => l + eol);
+  const lines = existing ? toLines(existing) : [];
+  const ranges = managedRanges(lines);
+  let out;
+  if (ranges.length) {
+    // replace the first managed range in place, drop any further ones
+    out = [];
+    let placed = false;
+    for (let i = 0; i < lines.length; i++) {
+      const r = ranges.find(([s0, e0]) => i >= s0 && i < e0);
+      if (!r) out.push(lines[i]);
+      else if (!placed) {
+        out.push(...block);
+        placed = true;
+        i = r[1] - 1;
+      } else i = r[1] - 1;
+    }
+  } else {
+    out = [...lines];
+    if (out.length && !/\n$/.test(out[out.length - 1])) out[out.length - 1] += eol;
+    if (out.length && bare(out[out.length - 1]) !== "") out.push(eol);
+    out.push(...block);
+  }
+  const next = out.join("");
   if (next === existing) return { ok: true, modified: false };
   guardWrite(filePath);
   backupOnce(filePath);
@@ -277,19 +314,23 @@ export function installTomlMcp(filePath, { command, args }) {
   return { ok: true, modified: true };
 }
 
+/** Removes only the managed lines. No managed entry: no write, no backup. Other bytes (EOLs, blanks) untouched. */
 export function uninstallTomlMcp(filePath) {
   if (!existsSync(filePath)) return { ok: true, modified: false };
   const existing = readFileSync(filePath, "utf8");
-  const stripped = stripTomlMcp(existing);
-  if (stripped === existing.replace(/\s+$/, "")) return { ok: true, modified: false };
+  const lines = toLines(existing);
+  const ranges = managedRanges(lines);
+  if (ranges.length === 0) return { ok: true, modified: false };
+  const kept = lines.filter((_, i) => !ranges.some(([s0, e0]) => i >= s0 && i < e0));
   guardWrite(filePath);
-  writeFileSync(filePath, stripped ? `${stripped}\n` : "", "utf8");
+  backupOnce(filePath);
+  writeFileSync(filePath, kept.join(""), "utf8");
   return { ok: true, modified: true };
 }
 
 export function hasTomlMcp(filePath) {
   if (!existsSync(filePath)) return false;
-  return readFileSync(filePath, "utf8").split(/\r?\n/).some((l) => tomlMainHeader.test(l.trim()));
+  return toLines(readFileSync(filePath, "utf8")).some((l) => tomlMainHeader.test(bare(l)));
 }
 
 const MCP_SCRIPT = "../mcp/mesh-mcp.mjs"; // relative to src/hooks (see HOOKS_DIR)

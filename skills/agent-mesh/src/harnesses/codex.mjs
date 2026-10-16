@@ -115,21 +115,24 @@ export default {
       kind: "wake",
       optIn: true,
       script: "mesh-wake-hook.mjs", // unused: the injector runs inside the broker
-      resolvePaths: () => ({ targetPath: wakeConfigPath(getMeshHome()) }),
+      // wake.json is the broker's (global) config: project-scope operations must not flip it
+      resolvePaths: ({ global }) => ({ targetPath: wakeConfigPath(getMeshHome()), global }),
       install(p) {
+        if (!p.global) return { ok: false, error: "Codex wake is a global (broker) setting: use --global", modified: false };
         const cfg = readWakeConfig(getMeshHome());
         if (cfg[ID] === true) return { ok: true, modified: false };
         writeWakeConfig(getMeshHome(), { ...cfg, [ID]: true });
         return { ok: true, modified: true };
       },
-      uninstall() {
+      uninstall(p) {
+        if (!p.global) return { ok: true, modified: false };
         const cfg = readWakeConfig(getMeshHome());
         if (!(ID in cfg)) return { ok: true, modified: false };
         delete cfg[ID];
         writeWakeConfig(getMeshHome(), cfg);
         return { ok: true, modified: true };
       },
-      diagnose: (p) => diagnoseResult(ID, p.targetPath, readWakeConfig(getMeshHome())[ID] === true),
+      diagnose: (p) => diagnoseResult(ID, p.targetPath, Boolean(p.global) && readWakeConfig(getMeshHome())[ID] === true),
     },
     // MCP servers are spawned per thread by the shared daemon (parent = daemon, not the TUI): tools only,
     // no presence announcement (hooks + scanner own presence).
@@ -175,6 +178,18 @@ export default {
   end: { signals: ["event", "pid", "ttl"], ttlMs: DEFAULT_TTL_MS },
   process: { exe: ["codex"], isInteractiveTui },
   fixtures: {
+    wakeScope: "global", // the contract's opt-in round trip runs in global scope (MESH_HOME is a temp dir there)
+    wakeSandbox(tmpHome) {
+      const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+      process.env.HOME = tmpHome;
+      process.env.USERPROFILE = tmpHome;
+      return () => {
+        for (const [k, v] of Object.entries(saved)) {
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        }
+      };
+    },
     name: {
       setup(dir) {
         const path = join(dir, "codex-state.sqlite");
