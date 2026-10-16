@@ -19,6 +19,7 @@ import { readSqliteRow, execSqlite } from "./shared/sqlite.mjs";
 import { DEFAULT_TTL_MS, classifyCmdline, getMeshHome, firstPositional as sharedFirstPositional } from "./shared/process.mjs";
 import { diagnoseResult, MCP_SERVER_NAME } from "./shared/install.mjs";
 import { guardWrite } from "./shared/home-guard.mjs";
+import { atomicWriteText } from "./shared/fs-atomic.mjs";
 
 const ID = "muse";
 const HOOK_PLUGIN = "agent-mesh";
@@ -86,10 +87,10 @@ function writeBundle(name, manifest, files) {
   const dir = bundleDir(name);
   guardWrite(dir);
   mkdirSync(join(dir, ".muse-plugin"), { recursive: true });
-  writeFileSync(join(dir, ".muse-plugin", "plugin.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8");
+  atomicWriteText(join(dir, ".muse-plugin", "plugin.json"), JSON.stringify(manifest, null, 2) + "\n", { backup: false });
   for (const [rel, content] of Object.entries(files)) {
     mkdirSync(dirname(join(dir, rel)), { recursive: true });
-    writeFileSync(join(dir, rel), content, "utf8");
+    atomicWriteText(join(dir, rel), content, { backup: false });
   }
   return dir;
 }

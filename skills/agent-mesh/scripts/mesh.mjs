@@ -93,7 +93,7 @@ const ipcAddress = resolveIpcAddress(rootDir);
  * @param {string[]} watcherArgs
  */
 function runHooksWatcher(watcherArgs) {
-  const logPath = join(homedir(), ".agent-mesh", "logs", "hooks.log");
+  const logPath = join(process.env.MESH_HOME || homedir(), ".agent-mesh", "logs", "hooks.log");
   const noBell = watcherArgs.includes("--no-bell");
   const enableSound =
     !watcherArgs.includes("--no-sound") &&
@@ -888,7 +888,7 @@ async function main() {
         }
 
         // Recent Hook Audit Log Tail
-        const hookLogPath = join(homedir(), ".agent-mesh", "logs", "hooks.log");
+        const hookLogPath = join(brokerRoot, ".agent-mesh", "logs", "hooks.log");
         console.log(`\n--- RECENT HOOK AUDIT LOG (${hookLogPath}) ---`);
         if (existsSync(hookLogPath)) {
           const lines = readFileSync(hookLogPath, "utf8").trim().split("\n").filter(Boolean);

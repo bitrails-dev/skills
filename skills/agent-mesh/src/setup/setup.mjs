@@ -16,6 +16,7 @@ import { createInterface } from "node:readline";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import * as registry from "../harnesses/index.mjs";
+import { guardWrite } from "../harnesses/shared/home-guard.mjs";
 
 export const ACTIONS = ["install", "update", "uninstall"];
 
@@ -148,14 +149,15 @@ export async function runSetup({ argv, rootDir, meshHome, brokerRoot, ipcAddress
   if (chosen.length === 0 && interactive) {
     out("\nHarnesses:");
     rows.forEach((r, i) => out(`  ${i + 1}. ${r.name.padEnd(14)} ${r.detected ? "detected    " : "not detected"}  ${fmtStatus(r.status)}`));
-    const defaults = rows.filter((r) => (action === "install" ? r.detected : r.status.hooks)).map((r) => r.id);
+    const installed = (r) => r.status.hooks || r.status.mcp === true || r.status.wake === true;
+    const defaults = rows.filter((r) => (action === "install" ? r.detected : installed(r))).map((r) => r.id);
     const answer = await ask(`Select (numbers/names, comma separated, 'all', Enter = ${defaults.join(",") || "none"}): `);
     if (answer.toLowerCase() === "all") chosen = [...supported];
     else if (answer) {
       chosen = answer.split(/[,\s]+/).filter(Boolean).map((tok) => (/^\d+$/.test(tok) ? rows[Number(tok) - 1]?.id : registry.canonicalId(tok))).filter(Boolean);
     } else chosen = defaults;
   } else if (chosen.length === 0) {
-    chosen = action === "install" ? detected : rows.filter((r) => r.status.hooks).map((r) => r.id);
+    chosen = action === "install" ? detected : rows.filter((r) => r.status.hooks || r.status.mcp === true || r.status.wake === true).map((r) => r.id);
   }
   chosen = [...new Set(chosen)].filter((id) => supported.includes(id));
   if (chosen.length === 0) {
@@ -239,6 +241,7 @@ export async function runSetup({ argv, rootDir, meshHome, brokerRoot, ipcAddress
       failed = true;
       out(`[purge] refused: ${stillUsed.join(", ")} still use the mesh (global hooks installed). Uninstall them first.`);
     } else if (existsSync(dir)) {
+      guardWrite(dir);
       rmSync(dir, { recursive: true, force: true });
       out(`[purge] deleted ${dir}`);
     }

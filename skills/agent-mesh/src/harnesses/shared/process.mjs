@@ -24,6 +24,22 @@ export function getMeshHome() {
   return process.env.MESH_HOME || homedir();
 }
 
+/**
+ * The PowerShell to use on Windows: pwsh.exe (7+) when it is on PATH, else the always-present Windows
+ * PowerShell 5.1. Resolved from PATH (no process spawn), cached per process.
+ * @param {{ PATH?: string, Path?: string }} [env]
+ * @param {(p: string) => boolean} [exists]
+ */
+export function resolvePowershell(env = process.env, exists = existsSync) {
+  const dirs = String(env.PATH || env.Path || "").split(";").filter(Boolean);
+  for (const exe of ["pwsh.exe", "powershell.exe"]) {
+    if (dirs.some((d) => exists(join(d, exe)))) return exe;
+  }
+  return "powershell.exe"; // System32\WindowsPowerShell is always on the default PATH
+}
+let powershellCache = null;
+export const powershellExe = () => (powershellCache ??= resolvePowershell());
+
 // ---- cmdline classification -------------------------------------------------------------------
 
 /** Subcommands/flags that mean "not an interactive TUI" (daemon, helper, headless run). */
@@ -72,7 +88,7 @@ export function processInfo(pid) {
     const args = win
       ? ["-NoProfile", "-NonInteractive", "-Command", `$p=Get-CimInstance Win32_Process -Filter "ProcessId=${pid}";if($p){"$($p.ParentProcessId)|$($p.CommandLine)"}`]
       : ["-o", "ppid=,args=", "-p", String(pid)];
-    execFile(win ? "pwsh.exe" : "ps", args, { windowsHide: true, timeout: 8000 }, (err, out) => {
+    execFile(win ? powershellExe() : "ps", args, { windowsHide: true, timeout: 8000 }, (err, out) => {
       if (err) return res(null);
       const m = win ? String(out).trim().match(/^(\d+)\|(.*)$/s) : String(out).trim().match(/^(\d+)\s+(.*)$/s);
       res(m ? { ppid: Number(m[1]), cmd: m[2] } : null);
@@ -105,11 +121,14 @@ export function walkPastShells(directPid) {
     if (process.env.MESH_NO_PID_WALK === "1") {
       // test/opt-out: trust the direct parent
     } else if (process.platform === "win32") {
+      // Get-CimInstance works on Windows PowerShell 5.1 and 7 (Process.Parent exists only on 7)
       const script =
-        `$s=@('${SHELLS.join("','")}');$p=Get-Process -Id ${directPid} -ErrorAction SilentlyContinue;` +
-        `while($p -and $p.ProcessName.ToLower() -in $s -and $p.Parent){$p=$p.Parent};if($p){"$($p.Id)|$($p.CommandLine)"}`;
+        `$s=@('${SHELLS.join("','")}');$id=${directPid};$cl='';` +
+        `for($i=0;$i -lt 8;$i++){$p=Get-CimInstance Win32_Process -Filter "ProcessId=$id" -ErrorAction SilentlyContinue;` +
+        `if(-not $p){break};$cl=$p.CommandLine;$n=($p.Name.ToLower() -replace '\.exe$','');` +
+        `if(($s -contains $n) -and $p.ParentProcessId){$id=$p.ParentProcessId}else{break}};"$id|$cl"`;
       const out = execFileSync(
-        "pwsh.exe",
+        powershellExe(),
         ["-NoProfile", "-NonInteractive", "-Command", script],
         { encoding: "utf8", timeout: 5000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }
       ).trim();

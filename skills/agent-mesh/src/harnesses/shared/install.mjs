@@ -9,6 +9,7 @@ import { dirname, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { guardWrite } from "./home-guard.mjs";
+import { atomicWriteText } from "./fs-atomic.mjs";
 
 /** Directory holding the hook/plugin entry scripts descriptors reference by file name. */
 export const HOOKS_DIR = resolve(import.meta.dirname, "..", "..", "hooks");
@@ -53,11 +54,7 @@ export function backupOnce(filePath) {
 
 /** Atomically writes a JSON object to disk via a temporary file and rename. */
 export function atomicWriteJson(filePath, data) {
-  guardWrite(filePath);
-  mkdirSync(dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.tmp`;
-  writeFileSync(tmpPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
-  renameSync(tmpPath, filePath);
+  atomicWriteText(filePath, `${JSON.stringify(data, null, 2)}\n`); // backs up the pre-change file when it differs
 }
 
 /**
@@ -164,12 +161,11 @@ export function hasNestedHooks(data) {
 /** Writes a tiny ESM loader file that re-exports a plugin/extension script by file URL. */
 export function writeLoader(loaderPath, scriptAbsPath, comment, exportsPlugin = false) {
   guardWrite(loaderPath);
-  mkdirSync(dirname(loaderPath), { recursive: true });
   const url = pathToFileURL(scriptAbsPath).href;
   const body = exportsPlugin
     ? `import plugin from "${url}";\nexport default plugin;\nexport { plugin };\n`
     : `import extension from "${url}";\nexport default extension;\n`;
-  writeFileSync(loaderPath, `// ${comment}\n${body}`, "utf8");
+  atomicWriteText(loaderPath, `// ${comment}\n${body}`, { backup: false });
 }
 
 /** Deletes a file if present. Returns true when something was removed. */
@@ -307,10 +303,7 @@ export function installTomlMcp(filePath, { command, args }) {
   }
   const next = out.join("");
   if (next === existing) return { ok: true, modified: false };
-  guardWrite(filePath);
-  backupOnce(filePath);
-  mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(filePath, next, "utf8");
+  atomicWriteText(filePath, next);
   return { ok: true, modified: true };
 }
 
@@ -322,9 +315,7 @@ export function uninstallTomlMcp(filePath) {
   const ranges = managedRanges(lines);
   if (ranges.length === 0) return { ok: true, modified: false };
   const kept = lines.filter((_, i) => !ranges.some(([s0, e0]) => i >= s0 && i < e0));
-  guardWrite(filePath);
-  backupOnce(filePath);
-  writeFileSync(filePath, kept.join(""), "utf8");
+  atomicWriteText(filePath, kept.join(""));
   return { ok: true, modified: true };
 }
 

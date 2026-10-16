@@ -6,6 +6,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { powershellExe } from "../harnesses/shared/process.mjs";
 
 /** Parent chain of `startPid` (including it), nearest first. Empty when disabled or unsupported. */
 export function ancestorPids(startPid = process.pid, maxDepth = 12) {
@@ -14,7 +15,7 @@ export function ancestorPids(startPid = process.pid, maxDepth = 12) {
     if (process.platform === "win32") {
       const script =
         "$p=" + startPid + ";$o=@();for($i=0;$i -lt " + maxDepth + ";$i++){$o+=$p;$q=(Get-CimInstance Win32_Process -Filter \"ProcessId=$p\").ParentProcessId;if(-not $q -or $q -eq $p){break};$p=$q};$o -join ','";
-      const out = execFileSync("pwsh.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+      const out = execFileSync(powershellExe(), ["-NoProfile", "-NonInteractive", "-Command", script], {
         encoding: "utf8",
         timeout: 8000,
         windowsHide: true,

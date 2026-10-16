@@ -186,7 +186,8 @@ export class AgentMeshBroker {
   /**
    * Long-poll for wake-eligible mail of ONE session (`mesh wait`). One listener per session: the lease is bound
    * to the waiter's pid. Returns { status: "mail" | "timeout" | "already-listening" | "session-closed" |
-   * "harness-gone" | "revoked" | "throttled" | "broker-stopping", messages? }. Acking is the waiter's job.
+   * "harness-gone" | "revoked" | "throttled" | "broker-stopping" }. "ready" means wake-eligible mail exists;
+   * the waiter claims and acks it itself.
    */
   async waitForMail({ agent, sessionId, pid, harnessPid, timeoutMs, debounceMs, oneshot }) {
     if (!sessionId) return { ok: false, error: "sessionId required" };
@@ -217,15 +218,12 @@ export class AgentMeshBroker {
       this.waiters.set(sessionId, { pid: waiterPid, seen: Date.now() });
       const verdict = this.wake.check(sessionId);
       if (!verdict.ok) return { ok: true, status: "throttled", reason: verdict.reason };
-      let messages = this.repo.claimInboxForSession(target, sessionId, { wakeOnly: true });
-      if (messages.length > 0) {
-        if (settle > 0) {
-          await sleep(settle); // batch a burst into one wake
-          messages = messages.concat(this.repo.claimInboxForSession(target, sessionId, { wakeOnly: true }));
-        }
-        this.wake.record(sessionId);
+      // Peek only: claiming here would strand the mail if the waiter dies before it can print. The waiter claims
+      // (claim_inbox wake:true, which also spends the budget) right before flushing.
+      if (this.repo.hasWakeMail(target, sessionId)) {
+        if (settle > 0) await sleep(settle); // let a burst accumulate so one claim batches it
         if (oneshot) this.waiters.delete(sessionId);
-        return { ok: true, status: "mail", messages };
+        return { ok: true, status: "ready" };
       }
       await sleep(400);
     }

@@ -19,7 +19,7 @@ const run = (args, input = "") =>
     cwd: proj,
     encoding: "utf8",
     input,
-    env: { ...process.env, MESH_HOME: home, MESH_SILENT: "1", MESH_MUSE_BIN: join(home, "no-such-muse.exe") },
+    env: { ...process.env, MESH_HOME: home, HOME: home, USERPROFILE: home, APPDATA: join(home, "AppData", "Roaming"), LOCALAPPDATA: join(home, "AppData", "Local"), MESH_SILENT: "1", MESH_MUSE_BIN: join(home, "no-such-muse.exe") },
   });
 const readJson = (p) => JSON.parse(readFileSync(join(proj, p), "utf8"));
 
@@ -66,7 +66,7 @@ test("answering 'n' at the confirmation changes nothing", () => {
     cwd: other,
     encoding: "utf8",
     input: "i\nclaude\nn\nn\nn\n",
-    env: { ...process.env, MESH_HOME: home, MESH_SILENT: "1", MESH_MUSE_BIN: join(home, "no-such-muse.exe") },
+    env: { ...process.env, MESH_HOME: home, HOME: home, USERPROFILE: home, APPDATA: join(home, "AppData", "Roaming"), LOCALAPPDATA: join(home, "AppData", "Local"), MESH_SILENT: "1", MESH_MUSE_BIN: join(home, "no-such-muse.exe") },
   });
   assert.match(r.stdout, /Cancelled/);
   assert.equal(existsSync(join(other, ".claude")), false);
@@ -119,7 +119,7 @@ test("bare words are harness names: `mesh setup claude --yes` installs only clau
   const r = spawnSync(process.execPath, [CLI, "setup", "claude", "--yes", "--project", "--no-broker"], {
     cwd: solo,
     encoding: "utf8",
-    env: { ...process.env, MESH_HOME: home, MESH_SILENT: "1", MESH_MUSE_BIN: join(home, "no-such-muse.exe") },
+    env: { ...process.env, MESH_HOME: home, HOME: home, USERPROFILE: home, APPDATA: join(home, "AppData", "Roaming"), LOCALAPPDATA: join(home, "AppData", "Local"), MESH_SILENT: "1", MESH_MUSE_BIN: join(home, "no-such-muse.exe") },
   });
   assert.equal(r.status, 0, r.stdout);
   assert.match(r.stdout, /- claude: hooks/);
@@ -149,7 +149,7 @@ test("update never adds opt-ins: hooks-only stays hooks-only, existing MCP is pr
     spawnSync(process.execPath, [CLI, "setup", ...args], {
       cwd: fresh,
       encoding: "utf8",
-      env: { ...process.env, MESH_HOME: home, MESH_SILENT: "1", MESH_MUSE_BIN: join(home, "no-such-muse.exe") },
+      env: { ...process.env, MESH_HOME: home, HOME: home, USERPROFILE: home, APPDATA: join(home, "AppData", "Roaming"), LOCALAPPDATA: join(home, "AppData", "Local"), MESH_SILENT: "1", MESH_MUSE_BIN: join(home, "no-such-muse.exe") },
     });
   assert.equal(inFresh(["--yes", "--project", "--harness", "claude,pi", "--action", "install", "--no-broker"]).status, 0);
 

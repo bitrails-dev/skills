@@ -16,7 +16,7 @@ const mesh = (...args) =>
   spawnSync(process.execPath, [CLI, ...args], {
     cwd: proj,
     encoding: "utf8",
-    env: { ...process.env, MESH_HOME: home, MESH_SILENT: "1" },
+    env: { ...process.env, MESH_HOME: home, HOME: home, USERPROFILE: home, APPDATA: join(home, "AppData", "Roaming"), LOCALAPPDATA: join(home, "AppData", "Local"), MESH_SILENT: "1" },
   });
 
 test("mcp install/status/remove touches only the MCP entries of the named harnesses", () => {

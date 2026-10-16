@@ -10,13 +10,14 @@
 
 import { isProcessAlive } from "../harnesses/shared/process.mjs";
 import { sendIpcRequest } from "../ipc.mjs";
+import { safeWrite } from "../presence/safe-write.mjs";
 import { formatBatch } from "../presence/inbox-format.mjs";
 import { settleClaim } from "../presence/announce.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Writes to stdout and resolves once flushed (Windows truncates output of fast-exiting processes). */
-const write = (text) => new Promise((resolve) => (process.stdout.write(text) ? resolve() : process.stdout.once("drain", resolve)));
+const write = (text) => safeWrite(process.stdout, text);
 
 /**
  * @param {object} opts
@@ -62,8 +63,14 @@ export async function runWait(opts) {
     if (!res.ok) return { code: 1, reason: res.error || "error", delivered };
 
     switch (res.status) {
-      case "mail": {
-        const batch = formatBatch(res.messages);
+      case "ready": {
+        // claim only now, right before flushing: a waiter that dies earlier strands nothing
+        const claim = await sendIpcRequest(address, { action: "claim_inbox", payload: { agent, sessionId, wake: true } }, 1).catch(() => null);
+        if (!claim?.ok || !Array.isArray(claim.messages) || claim.messages.length === 0) {
+          if (claim?.throttled) await sleep(throttleSleepMs);
+          break; // someone else (a hook) took it, or the budget refused: keep listening
+        }
+        const batch = formatBatch(claim.messages);
         await out(`${batch.text}\n`);
         await settleClaim(address, batch);
         delivered += batch.includedIds.length;

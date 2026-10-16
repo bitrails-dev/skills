@@ -14,6 +14,7 @@
 import { resolveIpcAddress } from "../ipc.mjs";
 import { readStdinJson, resolveTrueHarnessPid, isBackgroundSession } from "./common.mjs";
 import { runWait } from "../wait/mesh-wait.mjs";
+import { safeWrite } from "../presence/safe-write.mjs";
 
 async function main() {
   const input = await readStdinJson({ timeoutMs: 1500 });
@@ -31,7 +32,7 @@ async function main() {
     agent: harness,
     harnessPid: harnessPid || undefined,
     mailExitCode: 2,
-    out: (text) => new Promise((resolve) => (process.stderr.write(text) ? resolve() : process.stderr.once("drain", resolve))),
+    out: (text) => safeWrite(process.stderr, text),
   });
   return result.code === 3 ? 0 : result.code; // broker gone: stay silent, the next Stop re-arms
 }

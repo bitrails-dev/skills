@@ -10,6 +10,7 @@
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { guardWrite } from "../harnesses/shared/home-guard.mjs";
+import { atomicWriteText } from "../harnesses/shared/fs-atomic.mjs";
 
 export class WakePolicy {
   /**
@@ -78,7 +79,5 @@ export function readWakeConfig(meshHome) {
 
 export function writeWakeConfig(meshHome, config) {
   const path = wakeConfigPath(meshHome);
-  guardWrite(path);
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(config, null, 2) + "\n", "utf8");
+  atomicWriteText(path, JSON.stringify(config, null, 2) + "\n", { backup: false });
 }

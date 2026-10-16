@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { toastArgs } from "../notify.mjs";
 import { guardWrite } from "../harnesses/shared/home-guard.mjs";
+import { safeWrite } from "../presence/safe-write.mjs";
 import * as registry from "../harnesses/index.mjs";
 import { resolvePid, isBackgroundSession, isProcessAlive, getMeshHome } from "../harnesses/shared/process.mjs";
 
@@ -72,14 +73,7 @@ export function readStdinJson(options = {}) {
  * @returns {Promise<void>}
  */
 export function emitJson(obj) {
-  return new Promise((resolve) => {
-    const payload = `${JSON.stringify(obj)}\n`;
-    if (!process.stdout.write(payload)) {
-      process.stdout.once("drain", resolve);
-    } else {
-      process.nextTick(resolve);
-    }
-  });
+  return safeWrite(process.stdout, `${JSON.stringify(obj)}\n`);
 }
 
 /**
