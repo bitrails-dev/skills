@@ -61,7 +61,7 @@ test("hop propagation: a harness replying to delivered mail inherits parent and 
   await session("codex", "codex-chain", process.ppid);
   const first = await send("claude", "start of chain");
   assert.ok(first.ok);
-  let delivered = await drain("claude", null);
+  let delivered = await drain("claude", "claude-chain");
   assert.equal(delivered[0].hops, 0);
 
   let from = "claude";
@@ -71,7 +71,7 @@ test("hop propagation: a harness replying to delivered mail inherits parent and 
   for (let i = 0; i < 8; i++) {
     const r = await call({ action: "send", payload: { from, to, body: `hop ${i}`, kind: "notify", hops: 0 } });
     if (!r.ok) { refused = r.error; break; }
-    const got = await drain(to, null); // delivered to the other harness, which answers next
+    const got = await drain(to, to === "claude" ? "claude-chain" : "codex-chain"); // delivered to that session, which answers next
     assert.equal(got.length, 1);
     assert.ok(got[0].hops > lastHops, "hops grow although the sender never passed them");
     assert.ok(got[0].parent_id, "parent ticket recorded");
@@ -127,7 +127,7 @@ test("formatter strips control sequences, caps size and wraps mail in a provenan
   assert.ok(text.includes('from="evil___x"'));
   assert.ok(sanitizeText("x".repeat(9000)).includes("truncated 5000 chars"));
   const many = formatMessages(Array.from({ length: 10 }, (_, i) => ({ from_agent: "a", id: String(i), body: "y".repeat(3900) })));
-  assert.match(many, /more message\(s\) omitted/);
+  assert.match(many, /more message\(s\) are waiting/);
 });
 
 test("the Claude stop hook uses the shared formatter", async () => {

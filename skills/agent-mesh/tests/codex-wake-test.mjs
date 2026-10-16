@@ -136,7 +136,7 @@ test("injector wakes an idle thread through the control socket, skips active thr
     () => seen.find((m) => m.method === "item/started" && JSON.stringify(m.params).includes("please summarize the build")),
     45000
   );
-  assert.ok(injected, "the owner connection saw the injected user message");
+  assert.ok(injected, "the owner connection saw the injected user message " + JSON.stringify(broker.injectors.get("codex")?.stats()) + " pending=" + JSON.stringify((await call({ action: "inbox", payload: { agent: "codex" } })).messages.map((m) => [m.status, m.to_session, m.kind])));
   assert.match(JSON.stringify(injected.params), /provenance=\\"another-agent-untrusted\\"/);
   const delivered = await until(async () => (await call({ action: "inbox", payload: { agent: "codex", delivered: true } })).messages.length > 0, 5000);
   assert.ok(delivered, "ticket acked after turn/start");

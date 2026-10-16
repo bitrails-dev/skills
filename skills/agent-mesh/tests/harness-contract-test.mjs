@@ -116,7 +116,10 @@ async function runContract(t, h) {
   await t.test("wake source is opt-in, round-trips, keeps foreign config, and is always removed on uninstall", sandboxed(h, () => {
     if (!h.presence.some((s) => s.kind === "wake")) return;
     const root = mkdtempSync(join(tmpdir(), `mesh-contract-wake-${h.id}-`));
-    const opts = { global: false };
+    // Codex wake is a global broker setting (MESH_HOME is a temp dir in tests)
+    const opts = { global: h.fixtures?.wakeScope === "global" };
+    const restoreEnv = h.fixtures?.wakeSandbox?.(mkdtempSync(join(tmpdir(), `mesh-contract-wakehome-${h.id}-`)));
+    try {
     assert.equal(diagnoseWake(h.id, opts, root).supported, true);
     assert.equal(installHarness(h.id, opts, root).ok, true);
     assert.equal(diagnoseWake(h.id, opts, root).installed, false, "default install must not add the wake source");
@@ -129,17 +132,20 @@ async function runContract(t, h) {
 
     assert.equal(uninstallHarness(h.id, opts, root).ok, true);
     assert.equal(diagnoseWake(h.id, opts, root).installed, false);
+    } finally {
+      restoreEnv?.();
+    }
   }));
 
   await t.test("name resolution from fixture (and null for an unknown session)", () => {
     if (!h.name?.resolve) return;
-    const saved = { agy: process.env.MESH_AGY_DB, codex: process.env.MESH_CODEX_DB };
+    const saved = { agy: process.env.MESH_AGY_DB, codex: process.env.MESH_CODEX_DB, muse: process.env.MESH_MUSE_DB };
     try {
       const { ctx, expected } = h.fixtures.name.setup(mkdtempSync(join(tmpdir(), `mesh-contract-name-${h.id}-`)));
       assert.equal(h.name.resolve(ctx), expected);
       assert.equal(h.name.resolve({ sessionId: "no-such-session-xyz" }), null);
     } finally {
-      for (const [k, v] of [["MESH_AGY_DB", saved.agy], ["MESH_CODEX_DB", saved.codex]]) {
+      for (const [k, v] of [["MESH_AGY_DB", saved.agy], ["MESH_CODEX_DB", saved.codex], ["MESH_MUSE_DB", saved.muse]]) {
         if (v === undefined) delete process.env[k];
         else process.env[k] = v;
       }

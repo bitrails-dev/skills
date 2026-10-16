@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { execFile, execFileSync } from "node:child_process";
+import { guardWrite } from "./home-guard.mjs";
 
 /**
  * Safe process liveness check.
@@ -156,6 +157,7 @@ export function resolvePid(harness, sessionId, options = {}) {
   const pidFile = join(dir, `${id}.pid`);
   const mark = (suffix) => {
     try {
+      guardWrite(dir);
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, `${id}.${suffix}`), "1", "utf8");
     } catch {}
@@ -186,6 +188,7 @@ export function resolvePid(harness, sessionId, options = {}) {
   }
   if (resolvedPid && isProcessAlive(resolvedPid)) {
     try {
+      guardWrite(dir);
       mkdirSync(dir, { recursive: true });
       writeFileSync(pidFile, String(resolvedPid), "utf8");
     } catch {}
@@ -195,6 +198,7 @@ export function resolvePid(harness, sessionId, options = {}) {
   // 4. Cache fallback directPid
   if (directPid) {
     try {
+      guardWrite(dir);
       mkdirSync(dir, { recursive: true });
       writeFileSync(pidFile, String(directPid), "utf8");
     } catch {}

@@ -65,7 +65,7 @@ test("broker whoami resolves by session id, name, id prefix, pid and cwd; counts
   assert.equal(byId.version, "9.9.9-test");
   assert.equal(byId.wake.tier, "pull");
   assert.equal(byId.muted, false);
-  assert.ok("hooks" in byId.components && "mcp" in byId.components);
+  assert.equal(byId.components, null, "components are computed by callers, never in the broker loop");
 
   assert.equal((await call({ action: "whoami", payload: { harness: "claude", sessionId: "refactor-auth" } })).session.id, "claude-id-aaaa1111");
   assert.equal((await call({ action: "whoami", payload: { harness: "claude", sessionId: "claude-id-bbbb" } })).session.name, "other-work");

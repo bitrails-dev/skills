@@ -169,6 +169,7 @@ test("MCP tool results carry a 'you have mail' hint while mail is waiting", asyn
   await send("opencode", "mail for mcp user"); // opencode owner session registered above
   const child = spawn(process.execPath, [join(SRC, "mcp", "mesh-mcp.mjs"), "--harness", "opencode"], {
     env: childEnv({ MESH_AGENT: "1" }),
+    cwd: dir, // identity falls back to the cwd match when the shim does not announce
     stdio: ["pipe", "pipe", "ignore"],
   });
   let buf = "";

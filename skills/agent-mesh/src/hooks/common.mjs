@@ -2,6 +2,7 @@ import { existsSync, statSync, renameSync, mkdirSync, appendFileSync } from "nod
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { toastArgs } from "../notify.mjs";
+import { guardWrite } from "../harnesses/shared/home-guard.mjs";
 import * as registry from "../harnesses/index.mjs";
 import { resolvePid, isBackgroundSession, isProcessAlive, getMeshHome } from "../harnesses/shared/process.mjs";
 
@@ -160,6 +161,7 @@ export function notifyHookPresence({ harness, event, state, sessionId, pid }) {
 export function appendHookAuditLog(entry) {
   try {
     const logsDir = join(getMeshHome(), ".agent-mesh", "logs");
+    guardWrite(logsDir);
     mkdirSync(logsDir, { recursive: true });
     const logPath = join(logsDir, "hooks.log");
 

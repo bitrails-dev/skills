@@ -30,7 +30,7 @@ const runClaudeCli = (p, args) => {
   guardWrite(p.targetPath);
   const home = dirname(p.targetPath);
   execFileSync("claude", ["mcp", ...args], {
-    env: { ...process.env, HOME: home, USERPROFILE: home },
+    env: { ...process.env, HOME: home, USERPROFILE: home, APPDATA: join(home, "AppData", "Roaming"), LOCALAPPDATA: join(home, "AppData", "Local") },
     stdio: "ignore",
     timeout: 20000,
     windowsHide: true,

@@ -85,18 +85,57 @@ test("update is idempotent and keeps the opt-ins that are installed; --wake adds
   assert.equal(readJson(".claude/settings.json").hooks.SessionStart.filter((g) => JSON.stringify(g).includes("presence-hook")).length, 1);
 });
 
-test("uninstall removes hooks and every opt-in; --purge deletes the state directory", () => {
+test("--purge cannot be combined with --project and is refused while other harnesses still use the mesh", () => {
   mkdirSync(join(home, ".agent-mesh"), { recursive: true });
   writeFileSync(join(home, ".agent-mesh", "mesh.db"), "x");
-  const r = run(["--yes", "--project", "--all", "--action", "uninstall", "--purge", "--no-broker"]);
+  const project = run(["--yes", "--project", "--all", "--action", "uninstall", "--purge", "--no-broker"]);
+  assert.equal(project.status, 2);
+  assert.match(project.stdout, /--purge deletes the global state/);
+  assert.equal(existsSync(join(home, ".agent-mesh", "mesh.db")), true, "state untouched");
+
+  // global scope under a throwaway HOME: a harness that still has global hooks blocks the purge
+  const fakeHome = mkdtempSync(join(tmpdir(), "mesh-setup-realhome-"));
+  const globalRun = (args) =>
+    spawnSync(process.execPath, [CLI, "setup", ...args], {
+      cwd: proj,
+      encoding: "utf8",
+      env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome, MESH_HOME: fakeHome, MESH_SILENT: "1", MESH_MUSE_BIN: join(fakeHome, "no-muse.exe") },
+    });
+  assert.equal(globalRun(["--yes", "--harness", "claude,pi", "--action", "install", "--no-broker"]).status, 0);
+  mkdirSync(join(fakeHome, ".agent-mesh"), { recursive: true });
+  writeFileSync(join(fakeHome, ".agent-mesh", "mesh.db"), "x");
+  const partial = globalRun(["--yes", "--harness", "claude", "--action", "uninstall", "--purge", "--no-broker"]);
+  assert.equal(partial.status, 1, partial.stdout);
+  assert.match(partial.stdout, /\[purge\] refused: pi still use/);
+  assert.equal(existsSync(join(fakeHome, ".agent-mesh", "mesh.db")), true);
+  const full = globalRun(["--yes", "--harness", "pi", "--action", "uninstall", "--purge", "--no-broker"]);
+  assert.equal(full.status, 0, full.stdout);
+  assert.match(full.stdout, /\[purge\] deleted/);
+  assert.equal(existsSync(join(fakeHome, ".agent-mesh")), false);
+});
+
+test("bare words are harness names: `mesh setup claude --yes` installs only claude", () => {
+  const solo = mkdtempSync(join(tmpdir(), "mesh-setup-proj4-"));
+  const r = spawnSync(process.execPath, [CLI, "setup", "claude", "--yes", "--project", "--no-broker"], {
+    cwd: solo,
+    encoding: "utf8",
+    env: { ...process.env, MESH_HOME: home, MESH_SILENT: "1", MESH_MUSE_BIN: join(home, "no-such-muse.exe") },
+  });
+  assert.equal(r.status, 0, r.stdout);
+  assert.match(r.stdout, /- claude: hooks/);
+  assert.doesNotMatch(r.stdout, /- pi:|- codex:|- opencode:|- antigravity:/);
+  assert.equal(existsSync(join(solo, ".claude", "settings.json")), true);
+  assert.equal(existsSync(join(solo, ".pi")), false);
+});
+
+test("uninstall removes hooks and every opt-in (project scope)", () => {
+  const r = run(["--yes", "--project", "--all", "--action", "uninstall", "--no-broker"]);
   assert.equal(r.status, 0, r.stdout);
   assert.match(r.stdout, /\[claude:project\] removed/);
-  assert.match(r.stdout, /\[purge\] deleted/);
   assert.deepEqual(readJson(".claude/settings.json").hooks, {});
   assert.equal(readJson(".mcp.json").mcpServers["agent-mesh"], undefined);
   assert.equal(existsSync(join(proj, ".pi", "extensions", "agent-mesh-presence.js")), false);
   assert.equal(readJson(".pi/mcp.json").mcpServers["agent-mesh"], undefined);
-  assert.equal(existsSync(join(home, ".agent-mesh")), false);
 });
 
 test("bad input: unknown harness and unknown action exit 2", () => {

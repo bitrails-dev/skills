@@ -53,11 +53,17 @@ Not moved (transport-specific, by design): hook event mapping in `presence-hook.
 ```
 src/harnesses/
   index.mjs          registry: all, ids, get, canonicalId, byExe, endTtl, register, validateDescriptor
-  claude.mjs  codex.mjs  antigravity.mjs  opencode.mjs  pi.mjs
-  shared/  sqlite.mjs  transcript.mjs  process.mjs  install.mjs
-src/presence/        tui-scanner.mjs  name-watch.mjs  announce.mjs  mcp-dedupe.mjs
+  claude.mjs  codex.mjs  antigravity.mjs  opencode.mjs  pi.mjs  muse.mjs
+  codex-wake.mjs     broker-side Codex idle-thread injector (turn/start over the control socket)
+  shared/  sqlite.mjs  transcript.mjs  process.mjs  install.mjs  agents-dir.mjs  home-guard.mjs  ws-stdio.mjs
+src/presence/        tui-scanner.mjs  name-watch.mjs  announce.mjs  mcp-dedupe.mjs  inbox-format.mjs
+                     wake-policy.mjs  identity.mjs  caller.mjs
 src/mcp/             mesh-mcp.mjs
-tests/harness-contract-test.mjs  tests/mcp-shim-test.mjs
+src/wait/            mesh-wait.mjs  wake-probe.mjs  probe-emit.mjs
+src/setup/           setup.mjs
+tests/               harness-contract-test.mjs mcp-shim-test.mjs mail-delivery-test.mjs wake-safety-test.mjs
+                     mesh-wait-test.mjs wake-descriptor-test.mjs codex-wake-test.mjs opt-in-cli-test.mjs
+                     setup-test.mjs identity-test.mjs home-guard-test.mjs review-fixes-test.mjs
 ```
 
 Behavior preserved: IPC payloads, marker file names, poll cadences (3s scan, 5s external, 2s pid
@@ -105,7 +111,7 @@ pid exit; TUI classification from `fixtures.tui`; hook command-line classificati
 | antigravity | `~/.gemini/config/mcp_config.json` / `<root>/.agents/mcp_config.json` (project path unverified) | `{command, args, disabled:false}` |
 | opencode | `opencode.json`, key `mcp` | `{type:"local", command:[node, script, --harness, opencode], enabled:true}` |
 | pi | `~/.pi/agent/mcp.json` / `<root>/.pi/mcp.json` | `{command, args}` |
-| muse | plugin bundle `agent-mesh-mcp` (capability `mcpServers`, stdio) installed via `muse plugins install` + `approve`; also `mcpServers` in `~/.config/muse/settings.json` for HTTP servers | not observed (needs a live session) | unverified | unverified | unverified | unverified | validated and installed with `muse plugins` in an isolated HOME |
+| muse | plugin bundle `agent-mesh-mcp` installed through `muse plugins install` + `approve` | `{id: "agent-mesh", transport: "stdio", command: [node, script, --harness, muse]}` |
 
   The Stop-hook / plugin inbox injection stays installed and is the fallback where MCP is absent.
 
@@ -126,6 +132,7 @@ throwaway daemon/stdio server under a temp `CODEX_HOME` with a logging MCP probe
 | antigravity | `~/.gemini/config/mcp_config.json` (`agy mcp add` in an isolated HOME), entry `{command, args, disabled}` | eager: child 1s after agy.exe start (10:49:25 -> 10:49:26) | per session (two live agy.exe each had their own canva child) | `agy.exe` directly (`cmd /c npx` wrapper for npx servers) | not tested | not observed (`agy mcp list` does not spawn) | project-scope config path unverified; scanner pid == shim pid, so rows merge |
 | opencode | `opencode.json` key `mcp` (`type: local`, `command: [..]`) | `opencode mcp list` spawns and connects; session-time spawn not observed | unverified | unverified (plugins run in-process, so the parent is expected to be the opencode process) | server got stdin EOF right after the list command finished | `opencode` 1.19.0 | isolated HOME probe |
 | pi | `~/.pi/agent/mcp.json` / `.pi/mcp.json` in trusted projects, key `mcpServers` (`pi mcp add` in an isolated HOME) | `pi mcp list` spawns and connects; session-time spawn not observed (exposure modes `codemode` default, `deferred`, `direct`, `hidden`) | unverified | unverified | stdin EOF when the client exits | `pi` 1.1.0 | isolated HOME probe; Pi supports MCP natively |
+| muse | plugin bundle `agent-mesh-mcp` (capability `mcpServers`, stdio) installed via `muse plugins install` + `approve`; also `mcpServers` in `~/.config/muse/settings.json` for HTTP servers | not observed (needs a live session) | unverified | unverified | unverified | unverified | validated and installed with `muse plugins` in an isolated HOME |
 
 ### C. Codex app-server host verdict
 
@@ -186,6 +193,39 @@ unload timing under a live observer in the real daemon (only isolated daemon tes
     (set `announce: false` when its servers are hosted by a shared daemon); otherwise document it as unsupported.
 12. Add driver in `src/drivers/` only if the harness should receive headless turns (separate concern).
 
+## 8. Open decisions and risks
+
+- D1 (decided): id `antigravity`, `agy` is an alias, no DB migration.
+- D2 (decided): old installer exports remain as deprecated thin wrappers for one release.
+- D3 (done): in-process plugins (OpenCode, Pi) do not import the registry; they share only
+  `presence/announce.mjs` (plain ESM, relative import, same as `ipc.mjs`). Risk: loader path breakage; covered by existing install tests.
+- D4 (decided, deferred to Phase C): `bindTui` ambiguity with 2+ unbound Codex TUIs remains (known ponytail). Phase C may fix via
+  thread cwd/rollout_path; out of scope for the refactor, behavior must not regress.
+- D5: descriptor surface may grow; guardrail: any new field needs a contract assertion.
+- R1: pid-walk code spawns pwsh on Windows (1-2s); moving it must keep the `.pid` cache and
+  SessionEnd fast path byte-for-byte.
+- R2: `MESH_HOOK_MATCHER` must keep matching legacy hook names or uninstall leaves orphans.
+- R3: circular imports (broker -> registry -> shared -> common); keep `shared/` free of broker imports.
+- R4 (mitigated): MCP- and hook-announced sessions are deduped in the broker (`mcp-dedupe.mjs`), covered by
+  `tests/mcp-shim-test.mjs`.
+- R5 (mitigated): Claude user-scope MCP lives in `~/.claude.json`, which running sessions rewrite constantly.
+  The installer uses `claude mcp add/remove --scope user` (HOME/USERPROFILE pointed at the managed file's
+  directory) when the CLI is on PATH and falls back to a direct edit with `.bak` otherwise. Project scope
+  (`.mcp.json`) is edited directly.
+- R6: The shim adds a long-lived node process per session per harness (cheap: idle stdio, one pwsh walk at
+  start on Windows for `walk` harnesses).
+- D6 (decided): MCP stays opt-in (`--mcp`).
+- D7 (decided): `mesh_ask` is enqueue + reply via `mesh_inbox` (documented in the tool description); no blocking wait.
+
+### Known limitations
+
+- Codex subagent threads (`thread_spawn`) run hooks inside the shared daemon and are not filtered: they can
+  appear as extra rows until their TTL. Left as is on purpose.
+- `bindTui` can swap two unbound Codex TUIs opened before either sends a prompt (Phase C evidence: no
+  deterministic TUI pid <-> thread binding exists).
+- Claude may normalize/migrate unrelated keys of `~/.claude.json` when the CLI rewrites it; that is Claude's own
+  behavior, not the installer's.
+
 ## 9. Mail delivery (queued message -> running session)
 
 Root causes found (reproduced in `tests/mail-delivery-test.mjs` against an isolated broker):
@@ -218,7 +258,7 @@ a failed injection `release_claim`s the tickets; claims not acked within 90s are
 Honest limits: nothing can inject into an idle Claude Code, Codex or Antigravity TUI (no API; headless
 `-p --resume` would be a second writer on the same session, which the dual-writer rule forbids). A Codex wake
 would be possible through the app-server control socket (`turn/start` on the loaded thread, see section 6)
-but needs the observer client that was deliberately not built.
+and is now implemented as an opt-in broker-side injector (section 10, "Building blocks").
 
 ## 10. Wake tiers (reaching an IDLE session)
 
@@ -274,14 +314,19 @@ nonce emitter, asks what the harness did, prints the descriptor snippet and the 
 4. **Untrusted input**: one shared formatter (hooks, plugins, extension, MCP, `mesh wait`, Codex injector)
    strips ANSI/control characters, caps size, and wraps each message in a provenance envelope that tells the
    model it is data from another agent, not an instruction from its user.
-5. **Idle only**: the Codex injector checks thread status first (never interrupts a running turn); plugins skip
+5. **No silent loss**: every delivery path formats with `formatBatch` and settles with `settleClaim`: only mail that
+   was actually injected is acked, the rest is released back to the queue (12000-char batch cap, per-message cap).
+6. **Sender attribution**: `mesh send/ask` run through a harness shell tool resolve the calling session
+   (`$MESH_SESSION_ID`, else the process ancestry matched against live session pids) and send as that harness with
+   `fromSession`, so hop propagation applies and is keyed per session (`messages.claimed_by`).
+7. **Idle only**: the Codex injector checks thread status first (never interrupts a running turn); plugins skip
    busy sessions.
 
 ### Known limitations
 
 - Claude/Antigravity idle TUIs stay at pull until a probe proves the Claude candidate; Codex wake needs the
   daemon to be running and the thread to be loaded (a closed TUI's thread is not wakeable, mail waits).
-- The Codex injector is pinned to app-server 0.162.x; other versions disable it (mail falls back to pull).
+- The Codex injector is pinned to app-server 0.162.x and 0.163.x (both exercised by the isolated-daemon test); other versions disable it and mail falls back to pull.
 - An `asyncRewake` hook is subject to Claude's own loop protection ("exited 2 again" is not re-woken).
 - Wake delivery cannot tell which of several untargeted-eligible sessions the human is looking at; it uses the
   most recently active one.
@@ -295,7 +340,7 @@ Found read-only via PATH, `--help` of the real binary under an isolated HOME, an
 | Aspect | Finding |
 |---|---|
 | Config / state | `~/.config/muse` (settings.json, auth.json, trust.json); data `~/.local/share/muse` (plugins, skills, sessions, `session-index.db`) |
-| Hooks / MCP | **Plugin bundles** (`.muse-plugin/plugin.json`, capabilities skills/commands/hooks/mcpServers/reminders) installed with `muse plugins install <dir> --scope user|project` and trusted with `muse plugins approve`. No hand-edited hook file. Hook events are Claude-compatible (SessionStart, UserPromptSubmit, Stop, SessionEnd, PreToolUse, ...); `hookSpecificOutput.additionalContext` is honored (observed with `muse plugins hook test`); each hook needs its own source file |
+| Hooks / MCP | **Plugin bundles** (`.muse-plugin/plugin.json`, capabilities skills/commands/hooks/mcpServers/reminders) installed with `muse plugins install <dir> --scope user\|project` and trusted with `muse plugins approve`. No hand-edited hook file. Hook events are Claude-compatible (SessionStart, UserPromptSubmit, Stop, SessionEnd, PreToolUse, ...); `hookSpecificOutput.additionalContext` is honored (observed with `muse plugins hook test`); each hook needs its own source file |
 | Mesh install | descriptor generates `<meshHome>/.agent-mesh/muse-plugin/agent-mesh` (4 wrapper hooks that run the shared presence hook with `--harness muse`) and `.../agent-mesh-mcp` (opt-in stdio MCP server), then shells out to the real `muse` CLI; diagnose reads `muse plugins list --json` |
 | Session names | `session-index.db` table `sessions` (`session_name`, then `title`); polled like Codex/agy |
 | Process | `muse-bin-<version>.exe`; the launcher's cmd/powershell parents live as long as the TUI. `muse exec` is headless (classified background); `resume` and a bare prompt are the TUI |
@@ -305,17 +350,6 @@ Found read-only via PATH, `--help` of the real binary under an isolated HOME, an
 Unverified: the live hook stdin payload (field names for session id; fixture-based test only, `muse exec`
 with the echo provider does not fire plugin hooks), whether the Stop hook's `decision: block` continues the
 turn, the project-scope plugin location, and the native `session-message` path on non-Windows.
-
-## 13. Session identity (`ui.identity`)
-
-Broker action `whoami` returns one record (session id/name/harness/pid/cwd/origin/state, peers, inbox count,
-muted, broker version, wake tier + candidate, installed components in global scope). Consumers: the MCP
-`mesh_whoami` tool (and `mesh_status` header), the `mesh whoami` CLI, and the SessionStart badge. Each descriptor
-declares its badge channel: `hook-output` (+ `sessionStart`: `system-message+context` | `context` |
-`inject-steps`), `toast`, `status` or `none`. Formatting is shared (`src/presence/identity.mjs`).
-Evidence: Claude/Codex SessionStart output accepts `systemMessage` + `hookSpecificOutput.additionalContext`
-(Codex: from the embedded JSON schema); agy SessionStart accepts `injectSteps`; Pi `ctx.ui.setStatus`
-(extension types 1.2.0); OpenCode `client.tui.showToast` (SDK types). Muse: `additionalContext` only.
 
 ## 12. `.agents` convention per harness
 
@@ -332,35 +366,13 @@ declares `agents: {skills, config, evidence}`. `mesh doctor`/discovery use the h
 | pi | yes, global and project | no | pi docs (skills.md) |
 | muse | project only; `~/.agents/skills` import-only | no (plugin bundles via CLI) | binary strings |
 
-## 8. Open decisions and risks
+## 13. Session identity (`ui.identity`)
 
-- D1 (decided): id `antigravity`, `agy` is an alias, no DB migration.
-- D2 (decided): old installer exports remain as deprecated thin wrappers for one release.
-- D3 (done): in-process plugins (OpenCode, Pi) do not import the registry; they share only
-  `presence/announce.mjs` (plain ESM, relative import, same as `ipc.mjs`). Risk: loader path breakage; covered by existing install tests.
-- D4 (decided, deferred to Phase C): `bindTui` ambiguity with 2+ unbound Codex TUIs remains (known ponytail). Phase C may fix via
-  thread cwd/rollout_path; out of scope for the refactor, behavior must not regress.
-- D5: descriptor surface may grow; guardrail: any new field needs a contract assertion.
-- R1: pid-walk code spawns pwsh on Windows (1-2s); moving it must keep the `.pid` cache and
-  SessionEnd fast path byte-for-byte.
-- R2: `MESH_HOOK_MATCHER` must keep matching legacy hook names or uninstall leaves orphans.
-- R3: circular imports (broker -> registry -> shared -> common); keep `shared/` free of broker imports.
-- R4 (mitigated): MCP- and hook-announced sessions are deduped in the broker (`mcp-dedupe.mjs`), covered by
-  `tests/mcp-shim-test.mjs`.
-- R5 (mitigated): Claude user-scope MCP lives in `~/.claude.json`, which running sessions rewrite constantly.
-  The installer uses `claude mcp add/remove --scope user` (HOME/USERPROFILE pointed at the managed file's
-  directory) when the CLI is on PATH and falls back to a direct edit with `.bak` otherwise. Project scope
-  (`.mcp.json`) is edited directly.
-- R6: The shim adds a long-lived node process per session per harness (cheap: idle stdio, one pwsh walk at
-  start on Windows for `walk` harnesses).
-- D6 (decided): MCP stays opt-in (`--mcp`).
-- D7 (decided): `mesh_ask` is enqueue + reply via `mesh_inbox` (documented in the tool description); no blocking wait.
-
-### Known limitations
-
-- Codex subagent threads (`thread_spawn`) run hooks inside the shared daemon and are not filtered: they can
-  appear as extra rows until their TTL. Left as is on purpose.
-- `bindTui` can swap two unbound Codex TUIs opened before either sends a prompt (Phase C evidence: no
-  deterministic TUI pid <-> thread binding exists).
-- Claude may normalize/migrate unrelated keys of `~/.claude.json` when the CLI rewrites it; that is Claude's own
-  behavior, not the installer's.
+Broker action `whoami` returns one record (session id/name/harness/pid/cwd/origin/state, peers, inbox count,
+muted, broker version, wake tier + candidate, installed components in global scope). Consumers: the MCP
+`mesh_whoami` tool (and `mesh_status` header), the `mesh whoami` CLI, and the SessionStart badge. Each descriptor
+declares its badge channel: `hook-output` (+ `sessionStart`: `system-message+context` | `context` |
+`inject-steps`), `toast`, `status` or `none`. Formatting is shared (`src/presence/identity.mjs`).
+Evidence: Claude/Codex SessionStart output accepts `systemMessage` + `hookSpecificOutput.additionalContext`
+(Codex: from the embedded JSON schema); agy SessionStart accepts `injectSteps`; Pi `ctx.ui.setStatus`
+(extension types 1.2.0); OpenCode `client.tui.showToast` (SDK types). Muse: `additionalContext` only.
